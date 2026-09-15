@@ -2,6 +2,40 @@
 
 面向 Apple Silicon 的原生 macOS 本地 Web 工作台。当前为 **0.10.0 开发预览**：Apache、PHP-FPM、MariaDB、phpMyAdmin 及动态库已经可以随应用打包，最终用户运行核心 Web 环境不再需要 Homebrew。多站点、`.localhost` 域名、开发 HTTPS、Perl/CGI、PHP 扩展管理、项目向导、备份恢复和旧 XAMPP 逻辑迁移也已接入。正式自动更新、Developer ID 公证和可选 FTP 服务仍未完成，因此还不应称为所有场景下的完整 XAMPP 替代品。
 
+[![GitHub Release](https://img.shields.io/github/v/release/Tsagi01/MacStack?include_prereleases&label=release)](https://github.com/Tsagi01/MacStack/releases)
+![Platform](https://img.shields.io/badge/macOS-14%2B-black)
+![Architecture](https://img.shields.io/badge/Apple%20Silicon-ARM64-00bcd4)
+
+## 下载与安装
+
+MacStack 面向 **Apple Silicon（M1/M2/M3/M4 及后续芯片）和 macOS 14+**，不支持 Intel Mac。
+
+1. 前往 [GitHub Releases](https://github.com/Tsagi01/MacStack/releases/latest) 下载 `MacStack-0.10.0-arm64.dmg`（推荐）或 ZIP。
+2. 打开 DMG，把 `MacStack.app` 拖到“应用程序”文件夹；ZIP 用户解压后移动应用即可。
+3. 第一次启动时，macOS 可能因为当前开发预览包尚未 Apple 公证而阻止打开。请在 Finder 中按住 Control 点击 MacStack，选择“打开”，再次确认。
+4. 点击 **Start All**，然后打开 `http://localhost:8080`。默认网站目录是 `~/Library/Application Support/MacStack/runtime/www`，也可以在“网站”页面点击 **Open Application Folder**。
+
+DMG 和 ZIP 已包含 Apache、PHP-FPM、MariaDB、phpMyAdmin 及所需 ARM64 动态库。**使用安装包的普通用户不需要 Homebrew，也不需要 Rosetta。** 下载页同时提供 SHA-256 文件用于完整性核验。
+
+## 适合做什么
+
+- 学习 PHP、HTML、CSS、JavaScript 和“动态内容生成”课程。
+- 创建多个互不覆盖的 PHP 项目，并为项目单独建立数据库和访问端口。
+- 在浏览器运行 PHP 页面、使用 MariaDB 保存数据，并通过 phpMyAdmin 管理数据库。
+- 从旧 XAMPP 只读检查并迁移网站或数据库，不会删除原环境。
+
+它不是云服务器，也不会把网站自动发布到互联网。MacStack 当前不托管 FTP 服务；本机开发通常可直接用 Finder 或 VS Code 编辑项目文件。
+
+## 五分钟开始第一个网站
+
+1. 打开 MacStack，在“总览”点击 **Start All**。
+2. 进入“网站”，点击 **创建 PHP 项目**。
+3. 输入项目名；如需数据库，保留“同时创建数据库”。
+4. 创建后打开项目文件夹，在 `public/index.php` 中编写页面。
+5. 返回 MacStack，点击该网站的“打开”按钮在浏览器查看结果。
+
+图片、CSS 和 JavaScript 都放在项目目录内，例如 `public/images/photo.jpg`、`public/css/style.css`、`public/js/app.js`。PHP/HTML 中分别使用 `/images/photo.jpg`、`/css/style.css` 和 `/js/app.js` 引用。
+
 ## 已实现
 
 - SwiftUI 原生双栏界面：总览、网站、数据库、PHP 扩展、迁移、日志、环境、设置。

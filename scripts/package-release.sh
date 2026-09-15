@@ -13,7 +13,7 @@ RELEASE_DIR="$PROJECT_DIR/dist/releases"
 DMG_PATH="$RELEASE_DIR/MacStack-$VERSION-arm64.dmg"
 ZIP_PATH="$RELEASE_DIR/MacStack-$VERSION-arm64.zip"
 mkdir -p "$RELEASE_DIR"
-rm -f "$DMG_PATH" "$ZIP_PATH" "$DMG_PATH.sha256"
+rm -f "$DMG_PATH" "$ZIP_PATH" "$DMG_PATH.sha256" "$ZIP_PATH.sha256"
 
 if [ -n "${MACSTACK_DEVELOPER_ID_APPLICATION:-}" ]; then
   RUNTIME_DIR="$APP_DIR/Contents/Resources/runtime"
@@ -52,7 +52,12 @@ if [ -n "${MACSTACK_NOTARY_PROFILE:-}" ]; then
   /usr/bin/xcrun stapler staple "$DMG_PATH"
 fi
 
-/usr/bin/shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+(
+  cd "$RELEASE_DIR"
+  /usr/bin/shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256"
+  /usr/bin/shasum -a 256 "$(basename "$ZIP_PATH")" > "$(basename "$ZIP_PATH").sha256"
+)
 /usr/bin/file "$APP_DIR/Contents/MacOS/MacStack"
 /usr/bin/codesign -dv --verbose=2 "$APP_DIR" 2>&1 | /usr/bin/head -12
-printf 'Release: %s\nChecksum: %s\n' "$DMG_PATH" "$DMG_PATH.sha256"
+printf 'Release: %s\nRelease: %s\nChecksums: %s, %s\n' \
+  "$DMG_PATH" "$ZIP_PATH" "$DMG_PATH.sha256" "$ZIP_PATH.sha256"
