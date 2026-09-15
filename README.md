@@ -10,7 +10,7 @@
 
 MacStack 面向 **Apple Silicon（M1/M2/M3/M4 及后续芯片）和 macOS 14+**，不支持 Intel Mac。
 
-1. 前往 [GitHub Releases](https://github.com/Tsagi01/MacStack/releases/latest) 下载 `MacStack-0.10.0-arm64.dmg`（推荐）或 ZIP。
+1. 前往 [MacStack 0.10.0 下载页](https://github.com/Tsagi01/MacStack/releases/tag/v0.10.0) 下载 `MacStack-0.10.0-arm64.dmg`（推荐）或 ZIP。
 2. 打开 DMG，把 `MacStack.app` 拖到“应用程序”文件夹；ZIP 用户解压后移动应用即可。
 3. 第一次启动时，macOS 可能因为当前开发预览包尚未 Apple 公证而阻止打开。请在 Finder 中按住 Control 点击 MacStack，选择“打开”，再次确认。
 4. 点击 **Start All**，然后打开 `http://localhost:8080`。默认网站目录是 `~/Library/Application Support/MacStack/runtime/www`，也可以在“网站”页面点击 **Open Application Folder**。
