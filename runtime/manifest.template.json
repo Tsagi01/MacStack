@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "2026.09.1",
+  "architecture": "arm64",
+  "apacheVersion": "2.4.68",
+  "phpVersion": "8.2.33",
+  "phpFormula": "php@8.2",
+  "phpAPI": "20220829",
+  "mariaDBVersion": "11.4.13",
+  "phpMyAdminVersion": "5.2.3"
+}

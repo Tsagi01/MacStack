@@ -1,0 +1,39 @@
+# ── 构建产物 ────────────────────────────────────────────────
+.build/
+.swiftpm/
+out/
+# `debug` 是指向 out/Products/Debug 的符号链接。用 `/debug*` 而不是 `/debug`：
+# Finder 在重名时会生成 `debug 2`、`debug 3` 这类副本，只写 `/debug` 会漏掉它们。
+/debug*
+dist/
+artifacts/
+checkouts/
+repositories/
+workspace-state.json
+.lock
+manifest.pif
+# SwiftPM 把项目根当成 scratch path 时会写这两个标记（正常情况下不应出现，
+# 见 scripts/swift-env.sh 里 BUILD_CACHE 必须 export 的说明）。
+CACHEDIR.TAG
+.buildSystem_debug
+
+# ── 便携运行时（由 scripts/build-portable-runtime.sh 生成）────
+runtime/build/
+runtime/stage/
+runtime/downloads/
+
+# ── 模板变量未展开留下的残留 ─────────────────────────────────
+# Homebrew bottle 迁移占位符（{{pkgetc}} / {{etc}}）未被替换时，
+# 会在项目根留下同名目录和悬空符号链接，不应进入版本库。
+{{pkgetc}}/
+{{etc}}/
+
+# ── 编辑器残留 ───────────────────────────────────────────────
+# JetBrains 系 IDE 的「安全写入」会先落一个 .!<pid>!<name> 临时文件再改名。
+# 正常退出会清理，异常退出会留下旧版本副本，不应进入版本库。
+.!*!*
+*.swp
+*~
+
+# ── macOS ──────────────────────────────────────────────────
+.DS_Store

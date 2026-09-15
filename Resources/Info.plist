@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleExecutable</key><string>MacStack</string>
+    <key>CFBundleIdentifier</key><string>local.macstack.app</string>
+    <key>CFBundleName</key><string>MacStack</string>
+    <key>CFBundleDisplayName</key><string>MacStack</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>MacStack.icns</string>
+    <key>CFBundleShortVersionString</key><string>0.10.0</string>
+    <key>CFBundleVersion</key><string>14</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+</dict></plist>
