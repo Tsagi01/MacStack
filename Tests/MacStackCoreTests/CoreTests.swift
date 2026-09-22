@@ -506,6 +506,8 @@ import Testing
     defer { try? FileManager.default.removeItem(at: directory) }
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let site = Website(name: "Course", rootPath: directory.path, port: 8081, isEnabled: true, hostname: "course.localhost")
+    #expect(site.localURLString == "http://course.localhost:8081/")
+    #expect(site.healthCheckURL.absoluteString == "http://127.0.0.1:8081/")
     try WebsiteHostingValidator().validate(site)
     #expect(throws: WebsiteHostingError.self) {
         try WebsiteHostingValidator().validate(Website(name: "Bad", rootPath: directory.path, port: 8082, hostname: "bad.example.com"))

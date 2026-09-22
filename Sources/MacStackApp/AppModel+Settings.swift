@@ -84,7 +84,9 @@ extension AppModel {
                 continue
             }
             do {
-                var request = URLRequest(url: URL(string: website.localURLString)!)
+                // Keep the browser-facing `.localhost` URL for people, but
+                // probe the loopback address so ATS does not reject local HTTP.
+                var request = URLRequest(url: website.healthCheckURL)
                 request.timeoutInterval = 2
                 let (_, response) = try await URLSession.shared.data(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0

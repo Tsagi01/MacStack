@@ -124,6 +124,15 @@ public struct Website: Identifiable, Codable, Equatable, Sendable {
         "http://\(hostname.isEmpty ? "127.0.0.1" : hostname):\(port)/"
     }
 
+    /// App-internal probes use the numeric loopback address instead of the
+    /// friendly `.localhost` hostname. URLSession applies App Transport
+    /// Security to named HTTP hosts, even though `.localhost` never leaves
+    /// this Mac; probing loopback avoids that false failure without granting
+    /// the whole app a broad insecure-HTTP exception.
+    public var healthCheckURL: URL {
+        URL(string: "http://127.0.0.1:\(port)/")!
+    }
+
     public func secureURLString(port: Int) -> String? {
         guard !hostname.isEmpty else { return nil }
         return "https://\(hostname):\(port)/"

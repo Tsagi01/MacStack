@@ -1,6 +1,6 @@
 # MacStack
 
-面向 Apple Silicon 的原生 macOS 本地 Web 工作台。当前为 **0.10.0 开发预览**：Apache、PHP-FPM、MariaDB、phpMyAdmin 及动态库已经可以随应用打包，最终用户运行核心 Web 环境不再需要 Homebrew。多站点、`.localhost` 域名、开发 HTTPS、Perl/CGI、PHP 扩展管理、项目向导、备份恢复和旧 XAMPP 逻辑迁移也已接入。正式自动更新、Developer ID 公证和可选 FTP 服务仍未完成，因此还不应称为所有场景下的完整 XAMPP 替代品。
+面向 Apple Silicon 的原生 macOS 本地 Web 工作台。当前为 **0.10.1 开发预览**：Apache、PHP-FPM、MariaDB、phpMyAdmin 及动态库已经可以随应用打包，最终用户运行核心 Web 环境不再需要 Homebrew。多站点、`.localhost` 域名、开发 HTTPS、Perl/CGI、PHP 扩展管理、项目向导、备份恢复和旧 XAMPP 逻辑迁移也已接入。正式自动更新、Developer ID 公证和可选 FTP 服务仍未完成，因此还不应称为所有场景下的完整 XAMPP 替代品。
 
 [![GitHub Release](https://img.shields.io/github/v/release/Tsagi01/MacStack?include_prereleases&label=release)](https://github.com/Tsagi01/MacStack/releases)
 ![Platform](https://img.shields.io/badge/macOS-14%2B-black)
@@ -10,7 +10,7 @@
 
 MacStack 面向 **Apple Silicon（M1/M2/M3/M4 及后续芯片）和 macOS 14+**，不支持 Intel Mac。
 
-1. 前往 [MacStack 0.10.0 下载页](https://github.com/Tsagi01/MacStack/releases/tag/v0.10.0) 下载 `MacStack-0.10.0-arm64.dmg`（推荐）或 ZIP。
+1. 前往 [MacStack 0.10.1 下载页](https://github.com/Tsagi01/MacStack/releases/tag/v0.10.1) 下载 `MacStack-0.10.1-arm64.dmg`（推荐）或 ZIP。
 2. 打开 DMG，把 `MacStack.app` 拖到“应用程序”文件夹；ZIP 用户解压后移动应用即可。
 3. 第一次启动时，macOS 可能因为当前开发预览包尚未 Apple 公证而阻止打开。请在 Finder 中按住 Control 点击 MacStack，选择“打开”，再次确认。
 4. 点击 **Start All**，然后打开 `http://localhost:8080`。默认网站目录是 `~/Library/Application Support/MacStack/runtime/www`，也可以在“网站”页面点击 **Open Application Folder**。
