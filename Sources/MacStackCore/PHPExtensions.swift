@@ -316,10 +316,18 @@ public struct PHPExtensionManager: Sendable {
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else { return [:] }
-        return Dictionary(uniqueKeysWithValues: urls.compactMap { url -> (String, URL)? in
+        // 键是小写文件名，**不能用 `Dictionary(uniqueKeysWithValues:)`**：它在键重复时
+        // 直接 trap（崩溃），而这里的键来自文件系统。macOS 默认不区分大小写，
+        // 所以 `Xdebug.so` 与 `xdebug.so` 无法共存、实际撞不上；但在区分大小写的卷上
+        // 它们可以共存，那时打开扩展页就会崩。
+        //
+        // 按名字排序后保留第一个，结果确定，不会 trap。
+        let entries = urls.compactMap { url -> (String, URL)? in
             guard url.pathExtension.lowercased() == "so" else { return nil }
             return (url.deletingPathExtension().lastPathComponent.lowercased(), url.resolvingSymlinksInPath())
-        })
+        }
+        .sorted { $0.0 < $1.0 }
+        return Dictionary(entries, uniquingKeysWith: { first, _ in first })
     }
 
     private func configuredNames(at url: URL) throws -> Set<String> {
