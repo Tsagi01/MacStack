@@ -75,9 +75,16 @@
 
 ## 五、需要法律判断的问题
 
-- **MacStack 与 MariaDB 是「聚合」还是「单一作品」？** 从技术上看是聚合：
-  MacStack 以**子进程**方式启动 `mariadbd`，通过 socket 通信，两者不链接、不共享地址空间。
-  聚合是常见判断，但最终应由法律确认——这个判断决定了 MacStack 自身代码是否必须也是 GPL。
+- **MacStack 与 MariaDB 是「聚合」还是「单一作品」？** 这个判断决定了 MacStack 自身代码
+  是否必须也是 GPL。
+
+  技术上：MacStack 以**子进程**方式启动 `mariadbd`，通过 socket 通信，两者不链接、
+  不共享地址空间。这**支持**「聚合」的结论，但**不足以单独构成结论**——
+  MariaDB 的 Licensing FAQ 指出，判断「应用是否必须依赖服务器才能工作」还有进一步条件，
+  「独立进程」本身不是免于 GPL 义务的充分条件。**必须由法律确认。**
+
+  （这一段的谨慎程度与 `scripts/license_manifest.py` 生成的 `THIRD-PARTY.md`
+  保持一致；那里同样明确写出「独立进程」不是充分条件。）
 - **`LicenseRef-*` 标识符**（PHP 与 phpMyAdmin 的表达式里出现，例如
   `LicenseRef-Homebrew-public-domain`）是 Homebrew 内部标识符，**不在 SPDX 列表中**。
   需要确认它们对应的实际条款。
