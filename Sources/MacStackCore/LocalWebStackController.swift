@@ -45,11 +45,10 @@ public actor LocalWebStackController: ServiceControlling, WebStackControlling {
         // 这个文件的轮转时机只能在这里：`start` 只在没有存活进程时才会走到，
         // 上一个写入句柄已经关闭，而新句柄还没打开。
         //
-        // 之前考虑过在 LogMaintainer 里永久跳过 `*-launcher.log`，那只是把
-        // 「轮转后写入进错文件」换成了「这些日志永不轮转、无限增长」。
-        // 只轮转自己这一个文件，避免动到其他组件仍持有句柄的日志。
-        // 只轮转这个组件自己的日志（`<组件>-launcher.log`）。日志目录与数据库共享，
-        // 不能用全量轮转，否则会动到数据库仍持有句柄的日志。
+        // 只轮转这个组件自己的日志（`<组件>-launcher.log`）：日志目录与数据库共享，
+        // 全量轮转会动到数据库仍持有句柄的日志。之前考虑过在 LogMaintainer 里永久跳过
+        // `*-launcher.log`，那只是把「轮转后写入进错文件」换成了「这些日志永不轮转、
+        // 无限增长」。
         _ = try? LogMaintainer().rotate(
             directory: layout.logDirectory,
             prefixes: [component.rawValue]
