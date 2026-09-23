@@ -73,33 +73,90 @@ extension AppModel {
         changingWebsiteID = nil
     }
 
+    /// 刷新所有已启用网站的状态。
+    ///
+    /// 两个要点：
+    ///
+    /// 1. **有限并发。** 之前是完全串行、每站 2 秒超时，站点一多总等待时间线性增长，
+    ///    一个卡住的站点会拖住其余全部。现在按 `websiteProbeConcurrency` 分批并发。
+    /// 2. **取消过期请求。** 新一轮刷新开始前取消上一轮，避免旧探测结果覆盖新结果。
     func refreshWebsiteStatuses() async {
-        for website in settings.websites {
-            guard website.isEnabled else {
-                websiteStatuses[website.id] = "已停用"
-                continue
+        websiteStatusRefreshTask?.cancel()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performWebsiteStatusRefresh()
+        }
+        websiteStatusRefreshTask = task
+        await task.value
+    }
+
+    /// 只刷新一个网站。用于网站卡片上的手动刷新按钮。
+    func refreshWebsiteStatus(_ id: UUID) async {
+        guard let website = settings.websites.first(where: { $0.id == id }) else { return }
+        guard webServicesRunning else {
+            updateStoppedWebsiteStatuses()
+            return
+        }
+        let result = await WebsiteHealthProbe().probe(website.healthCheckURL)
+        websiteStatuses[id] = WebsiteStatus.from(result)
+    }
+
+    private func performWebsiteStatusRefresh() async {
+        guard webServicesRunning else {
+            updateStoppedWebsiteStatuses()
+            return
+        }
+        let websites = settings.websites.filter(\.isEnabled)
+        guard !websites.isEmpty else { return }
+
+        let probe = WebsiteHealthProbe()
+        let limit = max(1, Self.websiteProbeConcurrency)
+        var collected: [UUID: WebsiteStatus] = [:]
+
+        var index = 0
+        while index < websites.count {
+            if Task.isCancelled { return }
+            let chunk = Array(websites[index..<min(index + limit, websites.count)])
+            index += limit
+            await withTaskGroup(of: (UUID, WebsiteStatus).self) { group in
+                for website in chunk {
+                    group.addTask {
+                        (website.id, WebsiteStatus.from(await probe.probe(website.healthCheckURL)))
+                    }
+                }
+                for await (id, status) in group {
+                    collected[id] = status
+                }
             }
-            guard webServicesRunning else {
-                websiteStatuses[website.id] = "已启用 · 等待 Web 服务启动"
-                continue
-            }
-            do {
-                // Keep the browser-facing `.localhost` URL for people, but
-                // probe the loopback address so ATS does not reject local HTTP.
-                var request = URLRequest(url: website.healthCheckURL)
-                request.timeoutInterval = 2
-                let (_, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                websiteStatuses[website.id] = (200..<500).contains(status) ? "运行中 · HTTP \(status)" : "网站异常 · HTTP \(status)"
-            } catch {
-                websiteStatuses[website.id] = "网站无法访问 · \(error.localizedDescription)"
-            }
+        }
+
+        guard !Task.isCancelled else { return }
+        for (id, status) in collected {
+            websiteStatuses[id] = status
         }
     }
 
-    func updateStoppedWebsiteStatuses() {
+    /// 服务未运行时的状态刷新。
+    ///
+    /// **只更新「状态更新时间」，保留上一次真实请求的「最后检查时间」。**
+    /// 两个都刷新的话，停掉服务看起来像刚做过 HTTP 检查，而实际那次检查发生在更早、
+    /// 服务还在运行的时候。
+    func updateStoppedWebsiteStatuses(summary: String? = nil) {
+        let now = Date()
         for website in settings.websites {
-            websiteStatuses[website.id] = website.isEnabled ? "已启用 · 等待 Web 服务启动" : "已停用"
+            if let summary, website.isEnabled {
+                websiteStatuses[website.id] = WebsiteStatus.serviceStopped(
+                    previous: websiteStatuses[website.id],
+                    summary: summary,
+                    now: now
+                )
+            } else {
+                websiteStatuses[website.id] = WebsiteStatus.notRunning(
+                    enabled: website.isEnabled,
+                    previous: websiteStatuses[website.id],
+                    now: now
+                )
+            }
         }
     }
 
@@ -145,7 +202,7 @@ extension AppModel {
                 webStackStatus = "服务意外退出：Apache \(serviceStateText(apache))，PHP-FPM \(serviceStateText(php))。"
                 record("检测到 Web 服务意外退出。")
                 try? await webController.stopWebStack()
-                updateStoppedWebsiteStatuses()
+                updateStoppedWebsiteStatuses(summary: "Web 服务已停止，网站不可访问")
             }
         }
         if databaseRunning, !changingDatabase, let databaseController {

@@ -60,7 +60,7 @@ extension AppModel {
             try next.addWebsite(at: canonical, publicRoot: publicRoot, port: port)
             try store.save(next)
             settings = next
-            websiteStatuses[next.websites.last!.id] = "已登记 · 等待启用"
+            websiteStatuses[next.websites.last!.id] = WebsiteStatus.notRunning(enabled: true, previous: nil)
             record("已登记网站 \(canonical.lastPathComponent)，分配端口 \(port)。")
         }
         catch { message = error.localizedDescription }

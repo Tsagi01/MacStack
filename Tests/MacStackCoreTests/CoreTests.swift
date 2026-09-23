@@ -507,7 +507,14 @@ import Testing
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let site = Website(name: "Course", rootPath: directory.path, port: 8081, isEnabled: true, hostname: "course.localhost")
     #expect(site.localURLString == "http://course.localhost:8081/")
-    #expect(site.healthCheckURL.absoluteString == "http://127.0.0.1:8081/")
+    // 探测必须使用**与浏览器相同**的域名。之前改成 127.0.0.1 是为了绕开
+    // App Transport Security，代价是请求里没有网站的 Host，依赖域名判断的项目
+    // （WordPress 的 siteurl、Laravel 的 APP_URL）表现与浏览器不一致。
+    // 现在由 Info.plist 里只覆盖 localhost 的例外放行，见下方配套测试。
+    #expect(site.healthCheckURL.absoluteString == "http://course.localhost:8081/")
+    // 没有设置域名时退回回环地址，仍然可用。
+    let plain = Website(name: "Plain", rootPath: directory.path, port: 8083, isEnabled: true)
+    #expect(plain.healthCheckURL.absoluteString == "http://127.0.0.1:8083/")
     try WebsiteHostingValidator().validate(site)
     #expect(throws: WebsiteHostingError.self) {
         try WebsiteHostingValidator().validate(Website(name: "Bad", rootPath: directory.path, port: 8082, hostname: "bad.example.com"))
@@ -1741,4 +1748,152 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
         loadedModules: ApacheModulePlan.loadedModules(for: Preferences()).union(["negotiation"])
     )
     #expect(active.hasBlockingFinding)
+}
+
+// MARK: - 网站健康检查：状态分类
+
+/// 状态码分类必须能区分「正常」与「服务已响应但有问题」。
+///
+/// 之前把 `200..<500` 一律显示成「运行中」，于是 404、403 被当成正常网站。
+@Test func healthProbeClassifiesStatusCodes() {
+    #expect(WebsiteHealthProbe.classify(status: 200) == .ok)
+    #expect(WebsiteHealthProbe.classify(status: 204) == .ok)
+    #expect(WebsiteHealthProbe.classify(status: 301) == .redirect)
+    #expect(WebsiteHealthProbe.classify(status: 302) == .redirect)
+    #expect(WebsiteHealthProbe.classify(status: 401) == .unauthorized)
+    #expect(WebsiteHealthProbe.classify(status: 403) == .forbidden)
+    #expect(WebsiteHealthProbe.classify(status: 404) == .notFound)
+    #expect(WebsiteHealthProbe.classify(status: 418) == .clientError)
+    #expect(WebsiteHealthProbe.classify(status: 500) == .serverError)
+    #expect(WebsiteHealthProbe.classify(status: 503) == .serverError)
+    #expect(WebsiteHealthProbe.classify(status: nil) == .unexpectedStatus)
+}
+
+/// 403 与 401 不算故障——服务已经正常响应，只是拒绝访问。
+/// 把它们标红会让「故意加了访问保护的站点」看起来像坏了。
+@Test func healthProbeTreatsForbiddenAndUnauthorizedAsResponded() {
+    #expect(!WebsiteHealthOutcome.forbidden.isFailure)
+    #expect(!WebsiteHealthOutcome.unauthorized.isFailure)
+    #expect(!WebsiteHealthOutcome.redirect.isFailure)
+    #expect(!WebsiteHealthOutcome.ok.isFailure)
+    #expect(WebsiteHealthOutcome.notFound.isFailure)
+    #expect(WebsiteHealthOutcome.serverError.isFailure)
+    #expect(WebsiteHealthOutcome.connectionFailed.isFailure)
+}
+
+/// 「被系统传输安全策略拦截」必须与「连不上」区分开。
+///
+/// 两者的排查方向完全相反：前者说明请求根本没发出去，后者说明服务没起来。
+/// 混在一起会把用户引向错误的方向。
+@Test func healthProbeSeparatesTransportBlockingFromConnectionFailure() {
+    #expect(
+        WebsiteHealthProbe.classify(errorCode: NSURLErrorAppTransportSecurityRequiresSecureConnection)
+            == .transportBlocked
+    )
+    #expect(WebsiteHealthProbe.classify(errorCode: NSURLErrorCannotConnectToHost) == .connectionFailed)
+    #expect(WebsiteHealthProbe.classify(errorCode: NSURLErrorCannotFindHost) == .connectionFailed)
+    #expect(WebsiteHealthProbe.classify(errorCode: NSURLErrorTimedOut) == .timedOut)
+    #expect(WebsiteHealthProbe.classify(errorCode: NSURLErrorServerCertificateUntrusted) == .tlsFailure)
+    #expect(WebsiteHealthProbe.classify(errorCode: NSURLErrorSecureConnectionFailed) == .tlsFailure)
+}
+
+/// 服务停止只更新「状态更新时间」，必须保留上次真实请求的「最后检查时间」。
+///
+/// 两个都刷新的话，停掉服务看起来像刚做过 HTTP 检查，而实际那次检查发生在更早、
+/// 服务还在运行的时候。
+@Test func stoppedWebsiteKeepsLastCheckedTime() {
+    let checkedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let result = WebsiteHealthResult(
+        requestURL: "http://example.localhost:8081/",
+        status: 200,
+        outcome: .ok,
+        detail: "页面正常。",
+        checkedAt: checkedAt
+    )
+    let running = WebsiteStatus.from(result)
+    #expect(running.lastCheckedAt == checkedAt)
+    #expect(running.statusUpdatedAt == checkedAt)
+
+    let stoppedAt = checkedAt.addingTimeInterval(600)
+    let stopped = WebsiteStatus.notRunning(enabled: true, previous: running, now: stoppedAt)
+    // 关键：最后检查时间保持不变。
+    #expect(stopped.lastCheckedAt == checkedAt)
+    // 状态更新时间推进。
+    #expect(stopped.statusUpdatedAt == stoppedAt)
+
+    // 从未检查过的站点保持 nil，界面才会显示「尚未检查」。
+    let never = WebsiteStatus.notRunning(enabled: true, previous: nil, now: stoppedAt)
+    #expect(never.lastCheckedAt == nil)
+
+    // 服务意外退出走的是另一条路径，同样不能伪造「刚检查过」。
+    let crashed = WebsiteStatus.serviceStopped(previous: running, summary: "服务已停止", now: stoppedAt)
+    #expect(crashed.lastCheckedAt == checkedAt)
+    #expect(crashed.statusUpdatedAt == stoppedAt)
+}
+
+/// 状态文案要说清「发生了什么」，而不是笼统的「异常」。
+@Test func websiteStatusSummaryDistinguishesOutcomes() {
+    let ok = WebsiteHealthResult(requestURL: "u", status: 200, outcome: .ok)
+    #expect(WebsiteStatus.summary(for: ok).contains("正常"))
+
+    let redirect = WebsiteHealthResult(
+        requestURL: "u", status: 301, location: "/target", outcome: .redirect,
+        followedStatus: 200, followedURL: "u/target"
+    )
+    let redirectText = WebsiteStatus.summary(for: redirect)
+    #expect(redirectText.contains("/target"))
+    #expect(redirectText.contains("200"))
+
+    let loop = WebsiteHealthResult(
+        requestURL: "u", status: 302, location: "/a", outcome: .redirect,
+        detectedRedirectLoop: true
+    )
+    #expect(WebsiteStatus.summary(for: loop).contains("跳转循环"))
+
+    let external = WebsiteHealthResult(
+        requestURL: "u", status: 302, location: "https://example.com/", outcome: .redirect,
+        skippedExternalRedirect: true
+    )
+    #expect(WebsiteStatus.summary(for: external).contains("外部"))
+
+    let forbidden = WebsiteHealthResult(requestURL: "u", status: 403, outcome: .forbidden)
+    #expect(WebsiteStatus.summary(for: forbidden).contains("服务已响应"))
+
+    let notFound = WebsiteHealthResult(requestURL: "u", status: 404, outcome: .notFound)
+    #expect(WebsiteStatus.summary(for: notFound).contains("找不到页面"))
+
+    let failure = WebsiteHealthResult(requestURL: "u", outcome: .connectionFailed)
+    #expect(WebsiteStatus.summary(for: failure).contains("连接失败"))
+}
+
+/// `healthCheckURL` 用真实域名探测，因此 `Info.plist` 必须声明对应的传输安全例外。
+///
+/// 这两处**必须同步**：只改一处的话，应用里请求会失败，而单元测试照样全绿
+/// ——上一轮就是这样误判「ATS 问题已解决」的。这条测试把两者绑在一起，
+/// 并确保例外保持收窄（不给整个应用开明文 HTTP 口子）。
+@Test func infoPlistDeclaresScopedTransportSecurityException() throws {
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // MacStackCoreTests
+        .deletingLastPathComponent()   // Tests
+        .deletingLastPathComponent()   // 仓库根
+    let data = try Data(contentsOf: repositoryRoot.appendingPathComponent("Resources/Info.plist"))
+    let root = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+
+    let transportSecurity = root?["NSAppTransportSecurity"] as? [String: Any]
+    #expect(transportSecurity != nil, "Info.plist 必须声明 NSAppTransportSecurity")
+    #expect(
+        transportSecurity?["NSAllowsArbitraryLoads"] == nil,
+        "不应给整个应用开明文 HTTP 例外"
+    )
+
+    let domains = transportSecurity?["NSExceptionDomains"] as? [String: Any]
+    let localhost = domains?["localhost"] as? [String: Any]
+    #expect(
+        localhost?["NSExceptionAllowsInsecureHTTPLoads"] as? Bool == true,
+        "localhost 需要允许明文 HTTP"
+    )
+    #expect(
+        localhost?["NSIncludesSubdomains"] as? Bool == true,
+        "站点域名形如 xxx.localhost，必须包含子域"
+    )
 }

@@ -124,13 +124,18 @@ public struct Website: Identifiable, Codable, Equatable, Sendable {
         "http://\(hostname.isEmpty ? "127.0.0.1" : hostname):\(port)/"
     }
 
-    /// App-internal probes use the numeric loopback address instead of the
-    /// friendly `.localhost` hostname. URLSession applies App Transport
-    /// Security to named HTTP hosts, even though `.localhost` never leaves
-    /// this Mac; probing loopback avoids that false failure without granting
-    /// the whole app a broad insecure-HTTP exception.
+    /// 应用内部探测使用的地址。
+    ///
+    /// **与浏览器访问使用同一个域名。** 之前为了绕开 App Transport Security，这里
+    /// 改成了数字回环地址 `127.0.0.1`，代价是请求里没有网站的 `Host`：
+    /// 依赖域名判断的项目（WordPress 的 `siteurl`、Laravel 的 `APP_URL`）在探测时
+    /// 表现与浏览器不一致；若站点按配置域名跳转，跟随后的请求还会落到 `.localhost`
+    /// 上被 ATS 再拦一次，正常站点被误报成「无法访问」。
+    ///
+    /// 现在改为在 `Info.plist` 声明**只覆盖 `localhost` 及其子域**的传输安全例外，
+    /// 于是可以照用户真实访问的方式请求。
     public var healthCheckURL: URL {
-        URL(string: "http://127.0.0.1:\(port)/")!
+        URL(string: localURLString) ?? URL(string: "http://127.0.0.1:\(port)/")!
     }
 
     public func secureURLString(port: Int) -> String? {

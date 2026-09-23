@@ -124,10 +124,15 @@ swift run --scratch-path "$BUILD_CACHE" macstackctl prepare-phpmyadmin
 swift run --scratch-path "$BUILD_CACHE" macstackctl full-smoke-test
 swift run --scratch-path "$BUILD_CACHE" macstackctl sites-smoke-test
 swift run --scratch-path "$BUILD_CACHE" macstackctl htaccess-smoke-test
+swift run --scratch-path "$BUILD_CACHE" macstackctl health-probe [--port N] [--host 域名] [--path /]
 swift run --scratch-path "$BUILD_CACHE" macstackctl audit-xampp /Applications/XAMPP
 ```
 
 `htaccess-smoke-test` 会真实启动 Apache，验证伪静态、敏感文件拦截、`.htaccess` 开关和预检分类。它需要绑定本机端口，因此在受限环境（沙箱、CI 容器）里跑不通——那种环境下 `swift test` 也要加 `--disable-sandbox`，否则 SwiftPM 编译 manifest 时会报 `sandbox_apply: Operation not permitted`。
+
+`health-probe` 执行与界面**完全相同**的真实 HTTP 探测，并打印请求地址、HTTP 状态、`Location`、系统错误域与错误码、分类结论。不带 `--port` 时探测设置里所有已启用的网站。任何一次「界面状态显示不对」的怀疑，都先用这条命令复现，而不是靠截图猜。
+
+**注意**：App Transport Security 的例外只对 app bundle 生效，CLI 进程读的是自己的 Info.plist。因此这条命令验证的是**探测逻辑与状态分类**；「ATS 是否真的放行」必须在安装后的应用里确认，不能用它代替。
 
 也可用 Xcode 打开 `Package.swift`，选择 MacStack 可执行产品运行。
 脚本在默认工具链为 Command Line Tools 时，会为当前进程选择已安装的 Xcode / Xcode beta；不会更改系统的 xcode-select 设置。也可显式设置 `DEVELOPER_DIR` 选择其他 Xcode。
@@ -232,6 +237,31 @@ Homebrew 只提供组件，不同时通过 brew services 管理同一实例。
 ## 开发进度
 
 0.10.0 已完成首版免 Homebrew 发行运行时：应用内优先解析、Apache/PHP/MariaDB/phpMyAdmin 资源路径、递归 dylib 迁移、嵌入打包及隔离运行测试。下一阶段集中在签名更新清单与自动回滚、受限的可选 FTP 服务、从上游源码完全可复现构建，以及更多真实项目兼容性；具体见 `docs/NEXT_STEPS.md`。
+
+## 本机验证记录（2026-09-23）
+
+### 网站健康检查改造（第一批）
+
+**动机**：之前把 `200..<500` 一律显示成「运行中」，于是 404、403 被当成正常网站；探测为了绕开 ATS 改用 `127.0.0.1`，请求里没有网站的 `Host`。上一轮我曾把「URL 字符串测试通过」当成「ATS 问题已解决」——那是过度推断，本轮按「先建立真实验收，再改行为」的顺序重做。
+
+**改动**：
+
+- 新增 `WebsiteHealthProbe`：用站点**真实域名**发真实请求，**默认不跟随重定向**（否则 301/302 会被最终的 200 覆盖，界面永远显示不出「发生跳转」）。分类为正常 / 跳转 / 需要认证 / 访问被拒绝 / 找不到页面 / 服务器错误 / 请求被拒绝 / 未预期状态码 / 超时 / 连接失败 / 被传输安全策略拦截 / TLS 失败。本地跳转目标有限度跟随（最多 2 跳），并区分**跳转循环**、**外部跳转**与 TLS 失败。
+- `Resources/Info.plist` 新增 `NSAppTransportSecurity` → `NSExceptionDomains` → `localhost`（含 `NSIncludesSubdomains`）。**范围只覆盖 `localhost` 及其子域**，没有开 `NSAllowsArbitraryLoads`。
+- `healthCheckURL` 改回站点真实域名（无域名时退回回环地址）。
+- 新增 `macstackctl health-probe`，作为可复现的验收入口。
+- 网站状态改为 `WebsiteStatus`，**区分两个时间**：`lastCheckedAt`（最后一次真实 HTTP 请求）与 `statusUpdatedAt`（状态最后一次变化，含服务停止）。服务停止只推进后者，避免让人误以为刚做过检查。
+- 巡检改为**有限并发**（每批 4 个），刷新前**取消上一轮**未完成的探测；新增每站「刷新状态」与「刷新全部状态」按钮；网站页面可见时每 20 秒低频检查，切走即停。
+
+**验证**：
+
+- `swift test --disable-sandbox`：**78 项全部通过**（新增 6 项：状态码分类、403/401 不算故障、ATS 与连接失败必须区分、服务停止保留最后检查时间、状态文案、Info.plist 例外与探测域名必须同步）。编译无警告。
+- **10 条验收命令全部通过**。
+- `sites-smoke-test` 新增针对**真实 Apache** 的分类断言：运行中的站点 → `ok`、不存在的路径 → `notFound(404)`、无监听端口 → `connectionFailed`。
+- `health-probe` 对夹具服务器逐项验证：200 → 正常；301 → 发生跳转并显示 `Location`，跟随本地跳转后 HTTP 200；302 互相指向 → 检测到跳转循环；302 → `https://example.com` → 未跟随；先本地后外部 → 两段都如实报告；403 → 访问被拒绝（服务已响应）；404 → 找不到页面；500 → 服务器错误；超时 → `NSURLErrorDomain -1001`；无监听端口 → `-1004`。
+- **Host 验证**：夹具记录到服务端收到的 `Host` 是 `testapp.localhost:18782`，即站点真实域名，跳转跟随后的请求也带着它。
+
+**尚未完成（需要安装后的应用）**：ATS 例外是否真的放行，**只能由安装后的应用请求验证**。本轮发现一个与预期不同的现象：CLI 进程里 `.localhost` 并未被 ATS 拦截（最小 Swift 程序同样返回 200），因此 CLI 通过**不能**作为应用内放行的证据。
 
 ## 本机验证记录（2026-09-14）
 

@@ -50,7 +50,7 @@ final class AppModel: ObservableObject {
     @Published var checkingLegacyDatabase = false
     @Published var migratingLegacyDatabase: String?
     @Published var legacyDatabaseStatus = "连接正在运行的旧 XAMPP 数据库后，可按逻辑 SQL 方式复制到 MacStack。"
-    @Published var websiteStatuses: [UUID: String] = [:]
+    @Published var websiteStatuses: [UUID: WebsiteStatus] = [:]
     @Published var changingWebsiteID: UUID?
     @Published var creatingProject = false
     @Published var message: String?
@@ -76,6 +76,10 @@ final class AppModel: ObservableObject {
     var serviceMonitorTask: Task<Void, Never>?
     var backupSchedulerTask: Task<Void, Never>?
     var restoreJob: DatabaseRestoreJob?
+    /// 网站状态刷新任务。新一轮刷新前会取消它，避免旧探测结果覆盖新结果。
+    var websiteStatusRefreshTask: Task<Void, Never>?
+    /// 网站探测的并发上限：站点多时避免串行等待，也避免一次打出几十个请求。
+    static let websiteProbeConcurrency = 4
     private var didLaunch = false
 
     var backupDirectory: URL { backupCatalog.directory }

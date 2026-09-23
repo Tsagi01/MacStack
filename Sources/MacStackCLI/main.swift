@@ -8,9 +8,13 @@ struct MacStackCLI {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first,
-                  ["prepare", "smoke-test", "prepare-database", "database-smoke-test", "database-backup-smoke-test", "prepare-phpmyadmin", "full-smoke-test", "audit-xampp", "sites-smoke-test", "htaccess-smoke-test"].contains(command) else {
-                print("用法：macstackctl prepare [网站目录]\n      macstackctl smoke-test\n      macstackctl sites-smoke-test\n      macstackctl htaccess-smoke-test\n      macstackctl prepare-database\n      macstackctl database-smoke-test\n      macstackctl database-backup-smoke-test\n      macstackctl prepare-phpmyadmin\n      macstackctl full-smoke-test\n      macstackctl audit-xampp [XAMPP目录]")
+                  ["prepare", "smoke-test", "prepare-database", "database-smoke-test", "database-backup-smoke-test", "prepare-phpmyadmin", "full-smoke-test", "audit-xampp", "sites-smoke-test", "htaccess-smoke-test", "health-probe"].contains(command) else {
+                print("用法：macstackctl prepare [网站目录]\n      macstackctl smoke-test\n      macstackctl sites-smoke-test\n      macstackctl htaccess-smoke-test\n      macstackctl health-probe [--port N] [--host 域名] [--path /]\n      macstackctl prepare-database\n      macstackctl database-smoke-test\n      macstackctl database-backup-smoke-test\n      macstackctl prepare-phpmyadmin\n      macstackctl full-smoke-test\n      macstackctl audit-xampp [XAMPP目录]")
                 exit(arguments.isEmpty ? 0 : 64)
+            }
+            if command == "health-probe" {
+                try await runHealthProbe(Array(arguments.dropFirst()))
+                return
             }
             if command == "audit-xampp" {
                 let root = arguments.count > 1
@@ -264,6 +268,57 @@ struct MacStackCLI {
                     "多站点结果：PHP \(php.status)，HTML \(html.status)，CSS \(css.status)，.env \(env.status)，.git/config \(git.status)。"
                 )
             }
+
+            // 用与界面**完全相同**的探测逻辑再验一遍分类。必须在这里做——服务正在运行。
+            // （第一次我把这段放到了函数末尾，那时服务已停止，探测如实返回
+            // connectionFailed，反倒验证了「服务停止 → 连接失败」这条分类是对的。）
+            //
+            // 针对真实 Apache 检查，而不是只测分类函数：本次改造的核心 bug 就是
+            // 「404 被当成运行中」。
+            let probe = WebsiteHealthProbe()
+            let phpProbe = await probe.probe(phpSite.healthCheckURL)
+            let staticProbe = await probe.probe(staticSite.healthCheckURL)
+            guard phpProbe.outcome == .ok, staticProbe.outcome == .ok else {
+                throw ServiceControlError.healthCheckFailed(
+                    "运行中的站点应分类为 ok：PHP 站点 \(phpProbe.outcome)"
+                        + "（HTTP \(phpProbe.status.map(String.init) ?? "无响应")，"
+                        + "\(phpProbe.errorDomain ?? "-") \(phpProbe.errorCode.map(String.init) ?? "-")），"
+                        + "静态站点 \(staticProbe.outcome)"
+                        + "（HTTP \(staticProbe.status.map(String.init) ?? "无响应")，"
+                        + "\(staticProbe.errorDomain ?? "-") \(staticProbe.errorCode.map(String.init) ?? "-")）。"
+                )
+            }
+            // 不存在的路径必须分类为 notFound。若又变回「运行中」，说明分类退化了。
+            guard let missingURL = URL(string: "http://127.0.0.1:\(staticPort)/definitely-not-here") else {
+                throw ServiceControlError.healthCheckFailed("无法构造 404 测试地址。")
+            }
+            let missingProbe = await probe.probe(missingURL)
+            guard missingProbe.outcome == .notFound, missingProbe.status == 404 else {
+                throw ServiceControlError.healthCheckFailed(
+                    "不存在的路径应分类为 notFound(404)，实际 \(missingProbe.outcome)"
+                        + "（HTTP \(missingProbe.status.map(String.init) ?? "无响应")）。"
+                )
+            }
+            // 连不上的端口必须分类为 connectionFailed，而不是笼统的「无法访问」。
+            //
+            // 显式取一个**没有任何监听者**的空闲端口。不能拿后面那个「占用但不 accept」
+            // 的端口来测：TCP 握手会成功，结果是超时而不是拒绝连接。
+            var probeExcluded = excluded
+            guard let freePort = availability.nextAvailable(startingAt: staticPort + 20, excluding: probeExcluded) else {
+                throw ServiceControlError.healthCheckFailed("找不到用于连接失败测试的空闲端口。")
+            }
+            probeExcluded.insert(freePort)
+            guard let closedURL = URL(string: "http://127.0.0.1:\(freePort)/") else {
+                throw ServiceControlError.healthCheckFailed("无法构造连接失败测试地址。")
+            }
+            let closedProbe = await probe.probe(closedURL)
+            guard closedProbe.outcome == .connectionFailed else {
+                throw ServiceControlError.healthCheckFailed(
+                    "无监听者的端口应分类为 connectionFailed，实际 \(closedProbe.outcome)"
+                        + "（HTTP \(closedProbe.status.map(String.init) ?? "无响应")）。"
+                )
+            }
+            print("健康探测分类通过：运行中的站点 ok、不存在路径 notFound(404)、无监听端口 connectionFailed。")
             try await controller!.stopWebStack()
 
             _ = try WebStackPreparer().prepare(
@@ -307,6 +362,7 @@ struct MacStackCLI {
                 throw ServiceControlError.healthCheckFailed("站点端口冲突没有被拒绝，或占用端口的监听器受到了影响。")
             }
             print("双站点检查通过：PHP 动态页、静态 HTML/CSS、独立端口、停用隔离和敏感文件拦截均正常。")
+
             print("服务重启后站点端口保持：\(phpPort)、\(staticPort)。")
             print("站点端口冲突检查通过：Apache 回滚自己的进程，占用端口的监听器保持运行。")
         } catch {
@@ -557,6 +613,123 @@ struct MacStackCLI {
         } catch {
             if let controller { try? await controller.stopWebStack() }
             throw error
+        }
+    }
+
+    /// 真实 HTTP 探测的验收入口。
+    ///
+    /// 执行与界面**完全相同**的探测逻辑（`WebsiteHealthProbe`），并打印请求地址、
+    /// HTTP 状态、`Location`、系统错误域与错误码。这样任何一次「界面显示不对」的怀疑，
+    /// 都能先用一条命令复现，而不是靠截图猜。
+    ///
+    /// **注意**：App Transport Security 的例外只对 app bundle 生效，CLI 进程读的是
+    /// 自己的 Info.plist。因此这条命令验证的是**探测逻辑与状态分类**；
+    /// 「ATS 是否真的放行」必须在安装后的应用里确认，不能由这条命令代替。
+    private static func runHealthProbe(_ arguments: [String]) async throws {
+        var port: Int?
+        var host: String?
+        var path = "/"
+        var index = 0
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--port":
+                index += 1
+                guard index < arguments.count, let value = Int(arguments[index]) else {
+                    throw ServiceControlError.healthCheckFailed("--port 需要一个端口号。")
+                }
+                port = value
+            case "--host":
+                index += 1
+                guard index < arguments.count else {
+                    throw ServiceControlError.healthCheckFailed("--host 需要一个域名。")
+                }
+                host = arguments[index]
+            case "--path":
+                index += 1
+                guard index < arguments.count else {
+                    throw ServiceControlError.healthCheckFailed("--path 需要一个路径。")
+                }
+                path = arguments[index]
+            default:
+                throw ServiceControlError.healthCheckFailed("无法识别的参数：\(arguments[index])")
+            }
+            index += 1
+        }
+
+        var targets: [(label: String, url: URL)] = []
+        if let port {
+            // 用真实域名而不是 127.0.0.1：Host 必须与浏览器访问时一致。
+            let hostname = (host?.isEmpty == false) ? host! : "127.0.0.1"
+            let normalizedPath = path.hasPrefix("/") ? path : "/" + path
+            guard let url = URL(string: "http://\(hostname):\(port)\(normalizedPath)") else {
+                throw ServiceControlError.healthCheckFailed("无法构造请求地址。")
+            }
+            targets.append((hostname, url))
+        } else {
+            let settings = try SettingsStore().load()
+            let enabled = settings.websites.filter(\.isEnabled)
+            guard !enabled.isEmpty else {
+                print("设置里没有已启用的网站。用 --port 指定一个地址，或先在应用里登记网站。")
+                return
+            }
+            for website in enabled {
+                targets.append((website.name, website.healthCheckURL))
+            }
+        }
+
+        let probe = WebsiteHealthProbe()
+        var failures = 0
+        for target in targets {
+            let result = await probe.probe(target.url)
+            print(describeProbe(label: target.label, result: result))
+            if result.outcome.isFailure { failures += 1 }
+        }
+        if targets.count > 1 {
+            print("\n共 \(targets.count) 个站点，\(failures) 个需要关注。")
+        }
+    }
+
+    private static func describeProbe(label: String, result: WebsiteHealthResult) -> String {
+        var lines: [String] = []
+        lines.append("[\(label)]")
+        lines.append("  请求地址：\(result.requestURL)")
+        lines.append("  HTTP 状态：\(result.status.map(String.init) ?? "（无响应）")")
+        if let location = result.location {
+            lines.append("  Location：\(location)")
+        }
+        lines.append("  分类：\(describeOutcome(result.outcome))")
+        if let detail = result.detail {
+            lines.append("  说明：\(detail)")
+        }
+        if let domain = result.errorDomain, let code = result.errorCode {
+            lines.append("  系统错误：\(domain) \(code)")
+        }
+        if result.detectedRedirectLoop {
+            lines.append("  ⚠️ 检测到跳转循环")
+        }
+        if result.skippedExternalRedirect {
+            lines.append("  ⚠️ 跳转目标是外部地址，未跟随")
+        }
+        if let followedStatus = result.followedStatus, let followedURL = result.followedURL {
+            lines.append("  跟随本地跳转后：HTTP \(followedStatus) @ \(followedURL)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func describeOutcome(_ outcome: WebsiteHealthOutcome) -> String {
+        switch outcome {
+        case .ok: "正常"
+        case .redirect: "发生跳转"
+        case .unauthorized: "需要认证"
+        case .forbidden: "访问被拒绝（服务已响应）"
+        case .notFound: "找不到页面"
+        case .serverError: "服务器错误"
+        case .clientError: "请求被拒绝"
+        case .unexpectedStatus: "未预期的状态码"
+        case .timedOut: "超时"
+        case .connectionFailed: "连接失败"
+        case .transportBlocked: "被传输安全策略拦截"
+        case .tlsFailure: "TLS 失败"
         }
     }
 
