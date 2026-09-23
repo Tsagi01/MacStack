@@ -2630,3 +2630,104 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
     #expect(!rejects(password: "a\"b\\c"))
     #expect(!rejects(password: "带中文的密码"))
 }
+
+// MARK: - 设置文件的编解码完整性
+
+/// `Preferences` 的每一项都必须能被往返编解码。
+///
+/// 这个结构的属性**都带内联默认值**（`public var httpPort = 8080`），所以如果有人加了
+/// 第 20 个字段却忘在 `init(from:)` 里解码，**编译器不会报错**——那个字段会静默永远
+/// 等于默认值，用户在界面上改的值保存后读不回来。这类问题不会崩溃、不会报错，
+/// 只会让设置「不生效」，最难排查。
+///
+/// 这条测试同时检查两件事：
+/// 1. 把每一项都设成非默认值后往返，结果必须相等（漏解码会让该项回到默认值）
+/// 2. 编码结果必须**恰好**包含这些键（漏写 `CodingKeys` 会让它既不编码也不解码）
+///
+/// 新增字段时这条测试会失败——这是有意的，逼作者确认新字段进了 CodingKeys 与解码。
+@Test func preferencesRoundTripCoversEveryField() throws {
+    var original = Preferences()
+    original.httpPort = 18080
+    original.databasePort = 13307
+    original.restoreLastSession = false       // 默认 true
+    original.autoStartWeb = true
+    original.autoStartDatabase = true
+    original.automaticBackupEnabled = true
+    original.backupIntervalHours = 7
+    original.preferredPHPFormula = "php@8.3"
+    original.httpsEnabled = true
+    original.httpsPort = 18443
+    original.perlCGIEnabled = true
+    original.allowHtaccess = false            // 默认 true
+    original.allowHtaccessOptions = true
+    original.phpTimezone = "Asia/Shanghai"
+    original.memoryLimitMB = 1024
+    original.uploadMaxFilesizeMB = 128
+    original.postMaxSizeMB = 160
+    original.backupRetentionDays = 90
+    original.optionalApacheModules = ["expires", "deflate"]
+
+    let data = try JSONEncoder().encode(original)
+    let decoded = try JSONDecoder().decode(Preferences.self, from: data)
+    #expect(decoded == original, "往返后不一致，说明有字段没被解码")
+
+    let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    let expected: Set<String> = [
+        "httpPort", "databasePort", "restoreLastSession", "autoStartWeb", "autoStartDatabase",
+        "automaticBackupEnabled", "backupIntervalHours", "preferredPHPFormula",
+        "httpsEnabled", "httpsPort", "perlCGIEnabled", "allowHtaccess", "allowHtaccessOptions",
+        "phpTimezone", "memoryLimitMB", "uploadMaxFilesizeMB", "postMaxSizeMB",
+        "optionalApacheModules", "backupRetentionDays"
+    ]
+    #expect(
+        Set(object.keys) == expected,
+        "字段集合不符，差集：\(Set(object.keys).symmetricDifference(expected))"
+    )
+}
+
+/// 旧版本写下的 `workspace.json`（只有部分键）必须能读出来，缺失项取默认值。
+///
+/// 这是「给持久化结构加字段」的安全性保证：老用户升级后不能因为文件缺键就读不出设置。
+/// 用合成的 `Codable` 会因为缺键**整份失败**，所以 `Preferences` 必须手写解码。
+@Test func preferencesDecodesPartialLegacyFileWithDefaults() throws {
+    let json = #"{ "httpPort": 9090, "allowHtaccess": false }"#
+    let decoded = try JSONDecoder().decode(Preferences.self, from: Data(json.utf8))
+
+    #expect(decoded.httpPort == 9090)
+    #expect(decoded.allowHtaccess == false)
+    // 文件里没有的项走默认值，而不是报错。
+    let defaults = Preferences()
+    #expect(decoded.databasePort == defaults.databasePort)
+    #expect(decoded.httpsPort == defaults.httpsPort)
+    #expect(decoded.backupRetentionDays == defaults.backupRetentionDays)
+    #expect(decoded.optionalApacheModules == defaults.optionalApacheModules)
+    #expect(decoded.restoreLastSession == defaults.restoreLastSession)
+}
+
+/// `Website` 的每一项也要能往返。
+///
+/// 它的属性没有内联默认值，漏解码会编译报错，风险比 `Preferences` 低；
+/// 但 `publicRootPath` 在缺键时回退到 `rootPath`，这个回退行为值得固定住。
+@Test func websiteRoundTripPreservesEveryField() throws {
+    let original = Website(
+        name: "课程作业",
+        rootPath: "/Users/me/Sites/course",
+        publicRootPath: "/Users/me/Sites/course/public",
+        port: 8081,
+        isEnabled: true,
+        hostname: "course.localhost"
+    )
+    let data = try JSONEncoder().encode(original)
+    let decoded = try JSONDecoder().decode(Website.self, from: data)
+    #expect(decoded == original)
+
+    // 旧记录没有 publicRootPath 时回退到 rootPath。
+    let legacy = """
+    { "id": "\(original.id.uuidString)", "name": "旧记录", "rootPath": "/Users/me/Sites/old" }
+    """
+    let migrated = try JSONDecoder().decode(Website.self, from: Data(legacy.utf8))
+    #expect(migrated.publicRootPath == "/Users/me/Sites/old")
+    #expect(migrated.port == 0)
+    #expect(migrated.isEnabled == false)
+    #expect(migrated.hostname == "")
+}
