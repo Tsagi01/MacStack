@@ -72,16 +72,45 @@ public enum LocalHostname {
 public struct PortAvailability: Sendable {
     public init() {}
 
+    /// 判断 `127.0.0.1:port` 是否可以绑定（MacStack 只绑回环地址）。
+    ///
+    /// 分三步，每步解决一个具体问题（全部实测确认过）：
+    ///
+    /// 1. **严格绑定**（不设 `SO_REUSEADDR`）。成功即可用，直接返回。
+    /// 2. 失败时再用 `SO_REUSEADDR` 试一次。仍然失败说明**确实有活监听者**占着
+    ///    `127.0.0.1:port`——`SO_REUSEADDR` 不允许两个活监听者共存（实测 errno=48）。
+    ///    这一步是为了区分「活监听者」与「只是有 TIME_WAIT 连接残留」。
+    /// 3. `SO_REUSEADDR` 能绑上，说明 `127.0.0.1` 上没有活监听者。但**还要排除
+    ///    对方绑的是 `0.0.0.0`**：那种情况下 `127.0.0.1:port` 看起来能绑，
+    ///    而 Apache 实际绑不上。实测：对方绑 `0.0.0.0:port` 时，
+    ///    带 `SO_REUSEADDR` 绑 `127.0.0.1:port` **会成功**——所以不能只看第 2 步。
+    ///
+    /// 为什么需要第 2、3 步：只用严格绑定时，刚停止一个服务留下的 TIME_WAIT 连接
+    /// （macOS 上约 30 秒）会让这个函数误报「端口被占用」，于是「停服后立刻重新启用
+    /// 站点」会被拒绝——而 Apache 自己设了 `SO_REUSEADDR`，本来能绑上。
+    /// 反过来只加 `SO_REUSEADDR` 又会漏判通配监听者，把一个明确的拒绝变成启动失败。
     public func isAvailable(_ port: Int) -> Bool {
         guard (1024...65535).contains(port) else { return false }
+        if canBind(port, reuseAddress: false) { return true }
+        guard canBind(port, reuseAddress: true) else { return false }
+        // 走到这里：127.0.0.1 上没有活监听者。确认没有人占着通配地址。
+        return canBind(port, reuseAddress: true, wildcard: true)
+    }
+
+    /// 尝试绑定并立即释放。`wildcard` 为 true 时绑 `0.0.0.0`，否则绑 `127.0.0.1`。
+    private func canBind(_ port: Int, reuseAddress: Bool, wildcard: Bool = false) -> Bool {
         let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else { return false }
         defer { Darwin.close(descriptor) }
+        if reuseAddress {
+            var one: Int32 = 1
+            _ = setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
+        }
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = in_port_t(port).bigEndian
-        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        address.sin_addr = in_addr(s_addr: wildcard ? INADDR_ANY : inet_addr("127.0.0.1"))
         return withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0

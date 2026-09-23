@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import MacStackCore
@@ -2878,4 +2879,128 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
         #expect(url.lastPathComponent.hasPrefix(name))
         #expect(url.deletingLastPathComponent().path == directory.standardizedFileURL.path)
     }
+}
+
+// MARK: - 端口可用性探测
+
+/// 起一个真实监听者，返回 fd（失败返回 -1）。测试结束必须 close。
+private func startProbeListener(port: Int, wildcard: Bool = false) -> Int32 {
+    let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { return -1 }
+    var one: Int32 = 1
+    _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(port).bigEndian
+    address.sin_addr = in_addr(s_addr: wildcard ? INADDR_ANY : inet_addr("127.0.0.1"))
+    let bound = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+        }
+    }
+    guard bound, Darwin.listen(fd, 8) == 0 else { Darwin.close(fd); return -1 }
+    return fd
+}
+
+/// 取一个当前空闲的端口号（靠系统分配临时端口，避免与真实服务撞车）。
+private func probeFreePort() -> Int? {
+    let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { return nil }
+    defer { Darwin.close(fd) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = 0
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+    let bound = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+        }
+    }
+    guard bound else { return nil }
+    var out = sockaddr_in()
+    var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let named = withUnsafeMutablePointer(to: &out) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.getsockname(fd, $0, &length) == 0
+        }
+    }
+    guard named else { return nil }
+    return Int(UInt16(bigEndian: out.sin_port))
+}
+
+/// 空闲端口应报告可用。
+@Test func portAvailabilityReportsFreePortAsAvailable() throws {
+    guard let port = probeFreePort() else { return }
+    #expect(PortAvailability().isAvailable(port))
+}
+
+/// 有活监听者占着 `127.0.0.1:port` 时必须报告不可用。
+@Test func portAvailabilityDetectsLiveListenerOnLoopback() throws {
+    guard let port = probeFreePort() else { return }
+    let listener = startProbeListener(port: port)
+    guard listener >= 0 else { return }
+    defer { Darwin.close(listener) }
+
+    #expect(!PortAvailability().isAvailable(port), "有监听者却被判为可用")
+}
+
+/// **对方绑 `0.0.0.0` 时也必须报告不可用。**
+///
+/// 这条是这次修复里最容易搞错的地方：只加 `SO_REUSEADDR` 的话，绑 `127.0.0.1:port`
+/// 会**成功**（实测），于是判为「可用」——而 Apache 实际绑不上，用户看到的是
+/// 莫名其妙的启动失败，而不是一句明确的「端口被占用」。
+@Test func portAvailabilityDetectsLiveListenerOnWildcardAddress() throws {
+    guard let port = probeFreePort() else { return }
+    let listener = startProbeListener(port: port, wildcard: true)
+    guard listener >= 0 else { return }
+    defer { Darwin.close(listener) }
+
+    #expect(!PortAvailability().isAvailable(port), "通配地址上有监听者却被判为可用")
+}
+
+/// 只剩 TIME_WAIT 连接残留时，应报告**可用**。
+///
+/// 这是修复的目标场景：用户打开过网站 → 停止服务 → 立刻重新启用站点。
+/// 此时 `127.0.0.1:port` 上没有活监听者，只有约 30 秒的 TIME_WAIT 残留。
+/// 只做严格绑定的话会误报「端口被占用」，于是这个很常见的操作被拒绝——
+/// 而 Apache 自己设了 `SO_REUSEADDR`，本来绑得上。
+@Test func portAvailabilityReportsAvailableWhenOnlyTimeWaitRemains() throws {
+    guard let port = probeFreePort() else { return }
+    let listener = startProbeListener(port: port)
+    guard listener >= 0 else { return }
+
+    // 建立一条连接，然后由**服务端先关**，让服务端进入 TIME_WAIT。
+    let client = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+    guard client >= 0 else { Darwin.close(listener); return }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(port).bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+    let connected = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+        }
+    }
+    guard connected else { Darwin.close(client); Darwin.close(listener); return }
+
+    var peer = sockaddr_in()
+    var peerLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let serverSide = withUnsafeMutablePointer(to: &peer) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.accept(listener, $0, &peerLength)
+        }
+    }
+    if serverSide >= 0 { Darwin.close(serverSide) }   // 服务端先关 → TIME_WAIT
+    Darwin.close(client)
+    Darwin.close(listener)
+
+    // 留一点时间让状态落定，然后探测。
+    usleep(150_000)
+    #expect(
+        PortAvailability().isAvailable(port),
+        "只剩 TIME_WAIT 残留时被判为不可用——「停服后立刻重新启用」会被误拒"
+    )
 }
