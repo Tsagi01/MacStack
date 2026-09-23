@@ -235,7 +235,9 @@ import Testing
     let creator = PHPProjectCreator()
     let result = try creator.create(named: "动态课程", in: directory, databaseName: "course_site", databasePort: 3307)
     #expect(FileManager.default.fileExists(atPath: result.publicRoot.appendingPathComponent("index.php").path))
-    #expect(result.files.count == 5)
+    // 7 个文件：index.php、css/style.css、js/app.js、images/.gitkeep、
+    // config/database.example.php、README.md、.gitignore。
+    #expect(result.files.count == 7)
     let database = try String(contentsOf: result.root.appendingPathComponent("config/database.example.php"), encoding: .utf8)
     #expect(database.contains("dbname=course_site"))
     #expect(database.contains("port=3307"))
@@ -1977,4 +1979,122 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
     // 记录指向的文件也必须都还在。
     let missing = records.filter { !FileManager.default.fileExists(atPath: $0.filePath) }
     #expect(missing.isEmpty, "有 \(missing.count) 条记录对应的文件不存在")
+}
+
+/// 项目模板的目录结构必须与 README 说的一致。
+///
+/// 之前模板生成 `public/assets/style.css`，而 README 让用户把 CSS 放进 `public/css/`。
+/// 生成的 HTML 与 `assets/style.css` 本身是配套的，直接运行不会出错；但新手照 README
+/// 放文件、却没同步改引用时，样式表就会 404。归类为新手指引不一致，而不是模板坏了——
+/// 但两者必须统一。
+@Test func projectTemplateMatchesDocumentedLayout() throws {
+    let parent = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: parent) }
+    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+
+    let project = try PHPProjectCreator().create(
+        named: "demo",
+        in: parent,
+        databaseName: nil,
+        databasePort: 3307
+    )
+
+    let root = project.root
+    let expected = [
+        "public/index.php",
+        "public/css/style.css",
+        "public/js/app.js",
+        "public/images/.gitkeep",
+        "config/database.example.php",
+        "README.md"
+    ]
+    for path in expected {
+        #expect(
+            FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path),
+            "模板缺少 \(path)"
+        )
+    }
+    // 旧的 assets 目录不应再出现，否则两套路径会同时存在。
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("public/assets").path))
+
+    let index = try String(contentsOf: root.appendingPathComponent("public/index.php"), encoding: .utf8)
+    // index.php 引用的路径必须真实存在，且与 README 描述一致。
+    #expect(index.contains("css/style.css"))
+    #expect(index.contains("js/app.js"))
+    #expect(!index.contains("assets/"))
+    // 时区跟随 php.ini（`date.timezone = <resolvedTimezone>`），项目里不应再写死。
+    #expect(!index.contains("date_default_timezone_set"), "模板不应写死时区")
+
+    // 项目自己的 README 也要描述同一套结构。
+    let readme = try String(contentsOf: root.appendingPathComponent("README.md"), encoding: .utf8)
+    #expect(readme.contains("public/css/style.css"))
+    #expect(readme.contains("public/js/app.js"))
+    #expect(readme.contains("public/images/"))
+    #expect(!readme.contains("assets/"))
+}
+
+/// 旧版本的 `catalog.json` 没有 `preRestoreSnapshot` 字段，必须能照常读出。
+///
+/// 用合成的 `Codable` 会因为缺键让**整份**解码失败，而 `load()` 里是 `try?` ——
+/// 用户看到的现象是「所有备份都消失了」，非常吓人且极难归因。所以这个字段必须手写解码。
+@Test func backupCatalogReadsLegacyRecordsWithoutSnapshotFlag() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+    let store = BackupCatalogStore(directory: directory)
+    // 手写一份旧格式的 catalog.json：没有 preRestoreSnapshot 键。
+    let legacy = """
+    [
+      {
+        "id": "\(UUID().uuidString)",
+        "database": "legacy_db",
+        "filePath": "/tmp/legacy.sql",
+        "byteCount": 123,
+        "createdAt": "2026-01-02T03:04:05Z",
+        "automatic": true
+      }
+    ]
+    """
+    try Data(legacy.utf8).write(to: store.catalogURL)
+
+    let records = await store.load()
+    #expect(records.count == 1, "旧格式必须能读出来，而不是整份解码失败")
+    #expect(records.first?.database == "legacy_db")
+    #expect(records.first?.byteCount == 123)
+    #expect(records.first?.preRestoreSnapshot == false)
+}
+
+/// 恢复前快照登记为手动备份，因此**不会**被保留策略清理。
+///
+/// 它是恢复出错时唯一的退路，不能因为「太旧」被删掉。这条测试同时把天数策略
+/// 和份数上限都调紧，确认两者都不碰它。
+@Test func preRestoreSnapshotsSurviveRetentionPruning() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupCatalogStore(directory: directory)
+
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    let veryOld = now.addingTimeInterval(-400 * 86_400)
+
+    let snapshot = try await store.destination(database: "alpha", date: veryOld)
+    try Data("snapshot".utf8).write(to: snapshot)
+    _ = try await store.register(
+        database: "alpha",
+        file: snapshot,
+        automatic: false,
+        createdAt: veryOld,
+        preRestoreSnapshot: true
+    )
+
+    // 天数远小于 400、份数上限设为 1，快照都不该被删。
+    let removed = await store.pruneAutomaticBackups(olderThanDays: 30, keepingAtMost: 1, now: now)
+    #expect(removed == 0)
+
+    let remaining = await store.load()
+    #expect(remaining.contains { $0.preRestoreSnapshot }, "恢复前快照被清理掉了")
+    #expect(FileManager.default.fileExists(atPath: snapshot.path))
 }

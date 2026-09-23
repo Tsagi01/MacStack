@@ -7,14 +7,44 @@ public struct BackupRecord: Codable, Equatable, Identifiable, Sendable {
     public let byteCount: Int64
     public let createdAt: Date
     public let automatic: Bool
+    /// 是否是「恢复备份之前自动生成的快照」。
+    ///
+    /// 它登记为手动备份（`automatic == false`），因此**不会被保留策略清理**：
+    /// 恢复出错时这份快照就是唯一的退路，不能因为「太旧」被删掉。
+    public let preRestoreSnapshot: Bool
 
-    public init(id: UUID = UUID(), database: String, filePath: String, byteCount: Int64, createdAt: Date = Date(), automatic: Bool) {
+    public init(
+        id: UUID = UUID(),
+        database: String,
+        filePath: String,
+        byteCount: Int64,
+        createdAt: Date = Date(),
+        automatic: Bool,
+        preRestoreSnapshot: Bool = false
+    ) {
         self.id = id
         self.database = database
         self.filePath = filePath
         self.byteCount = byteCount
         self.createdAt = createdAt
         self.automatic = automatic
+        self.preRestoreSnapshot = preRestoreSnapshot
+    }
+
+    /// 手写解码。
+    ///
+    /// 旧版本的 `catalog.json` 里没有 `preRestoreSnapshot` 这个键。用合成的 `Codable`
+    /// 会因为缺键直接抛错，导致**整份清单读不出来**（`load()` 里 `try?` 会把它吞成空数组，
+    /// 用户看到的是「所有备份都消失了」）。因此必须按缺省 false 解码。
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        database = try values.decode(String.self, forKey: .database)
+        filePath = try values.decode(String.self, forKey: .filePath)
+        byteCount = try values.decode(Int64.self, forKey: .byteCount)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        automatic = try values.decode(Bool.self, forKey: .automatic)
+        preRestoreSnapshot = try values.decodeIfPresent(Bool.self, forKey: .preRestoreSnapshot) ?? false
     }
 }
 
@@ -74,11 +104,27 @@ public actor BackupCatalogStore {
     ///
     /// 删除记录的唯一位置是 `pruneAutomaticBackups`，它会**连同文件一起**删掉，
     /// 因此不会产生「记录没了、文件还在」的孤儿。
-    public func register(database: String, file: URL, automatic: Bool, createdAt: Date = Date()) throws -> [BackupRecord] {
+    public func register(
+        database: String,
+        file: URL,
+        automatic: Bool,
+        createdAt: Date = Date(),
+        preRestoreSnapshot: Bool = false
+    ) throws -> [BackupRecord] {
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         var records = load()
-        records.insert(BackupRecord(database: database, filePath: file.path, byteCount: size, createdAt: createdAt, automatic: automatic), at: 0)
+        records.insert(
+            BackupRecord(
+                database: database,
+                filePath: file.path,
+                byteCount: size,
+                createdAt: createdAt,
+                automatic: automatic,
+                preRestoreSnapshot: preRestoreSnapshot
+            ),
+            at: 0
+        )
         try save(records)
         return records
     }

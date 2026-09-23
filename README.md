@@ -284,6 +284,47 @@ Homebrew 只提供组件，不同时通过 brew services 管理同一实例。
 - 新增 `backupCatalogSurvivesConcurrentRegistration`：24 个并发登记必须一条不丢、且记录指向的文件都存在。
 - **验证过这条测试真的能抓到 bug**：临时复刻旧的无锁 struct 实现，用同样的并发模式压它，确认它**确实丢记录**（否则这条测试就没有价值）。验证后已删除该临时探针。
 
+### 项目模板与恢复前快照
+
+**一、模板目录与 README 不一致**
+
+模板生成的是 `public/assets/style.css`，而 README 让用户把 CSS 放进 `public/css/`。生成的 HTML 与 `assets/style.css` 本身是配套的，直接运行不会出错；但新手照 README 放文件、却没同步改引用时，样式表就会 404。这是新手指引不一致，不是模板损坏——但两者必须统一。
+
+现在模板生成：
+
+```
+public/
+  index.php
+  css/style.css
+  js/app.js
+  images/.gitkeep    ← 空目录不被 Git 跟踪，放占位文件
+config/database.example.php
+README.md
+.gitignore
+```
+
+`index.php` 引用 `css/style.css` 与 `js/app.js`，项目自带的 README 描述同一套结构，并说明「移动文件后记得同步改引用」。
+
+**二、模板硬编码时区**
+
+`index.php` 里写死了 `date_default_timezone_set('Asia/Shanghai')`，会覆盖用户在设置里配置的 PHP 时区。**直接删掉这一行**：时区的唯一来源是 MacStack 生成的 `php.ini`（`date.timezone = <resolvedTimezone>`），项目里再写一次既冲突，换台机器跑时那个硬编码值还是错的。
+
+**三、恢复备份前没有退路**
+
+恢复是破坏性操作——SQL 里的建库/删表语句直接覆盖现有数据，选错文件就回不去。现在在确认之后、执行之前，自动给现有业务库各做一份快照：
+
+- 登记为**手动备份**（`automatic: false`），因此**不会被保留策略清理**；它是出错时唯一的退路。
+- 标记 `preRestoreSnapshot`，界面上用「恢复前快照」标签单独说明来源，避免用户疑惑「我没导过这个」。
+- 快照失败时不静默继续，而是弹窗告知「没有快照就恢复，一旦选错文件将无法回退」，由用户决定是否继续。
+
+**验证**：
+
+- `swift test --disable-sandbox`：**83 项全部通过**（新增 3 项）。编译无警告。
+- **10 条验收命令全部通过**。
+- 新增 `projectTemplateMatchesDocumentedLayout`：模板必须生成 README 描述的同一套路径，`index.php` 的引用必须真实存在，且不得再出现 `assets/`、不得写死时区。
+- 新增 `backupCatalogReadsLegacyRecordsWithoutSnapshotFlag`：旧格式 `catalog.json`（无新字段）必须能读出。**这条测试的有效性验证过**——临时把可选解码改成必需解码，测试立刻以 `records.count == 1` 失败，即整份清单读不出来，与注释描述的故障现象一致。
+- 新增 `preRestoreSnapshotsSurviveRetentionPruning`：天数与份数上限都调紧，快照仍不被删。
+
 ## 本机验证记录（2026-09-14）
 
 ### 改进方案五个阶段实施后的完整回归

@@ -35,6 +35,36 @@ extension AppModel {
         backingUpDatabase = activeBackupJobs > 0
     }
 
+    /// 恢复之前给现有业务库各做一份快照。
+    ///
+    /// 快照登记为**手动备份**（`automatic: false`），因此不会被保留策略清理 ——
+    /// 恢复出错时它是唯一的退路。同时标记 `preRestoreSnapshot`，界面上单独说明来源。
+    ///
+    /// - Returns: 生成的快照数量。一个业务库都没有（全新环境）时返回 0，不阻塞恢复。
+    private func createPreRestoreSnapshots(
+        layout: RuntimeLayout,
+        installation: InstalledDatabaseStack
+    ) async throws -> Int {
+        let catalog = backupCatalog
+        return try await Task.detached { () -> Int in
+            let manager = DatabaseBackupManager(installation: installation, layout: layout)
+            let databases = try manager.listDatabases()
+            var created = 0
+            for database in databases {
+                let destination = try await catalog.destination(database: database)
+                try manager.exportDatabase(named: database, to: destination)
+                _ = try await catalog.register(
+                    database: database,
+                    file: destination,
+                    automatic: false,
+                    preRestoreSnapshot: true
+                )
+                created += 1
+            }
+            return created
+        }.value
+    }
+
     func exportSelectedDatabase() async {
         guard databaseRunning, !selectedDatabase.isEmpty else {
             message = "请先启动数据库并选择要导出的数据库。"
@@ -100,6 +130,29 @@ extension AppModel {
             alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+            // 恢复是破坏性操作：SQL 里的建库/删表语句会直接覆盖现有数据，选错文件就回不去。
+            // 因此在真正执行之前，先给现有业务库各做一份快照。
+            var snapshotNote: String
+            do {
+                let count = try await createPreRestoreSnapshots(layout: layout, installation: installation)
+                snapshotNote = count > 0
+                    ? "已在恢复前为 \(count) 个现有数据库各生成一份快照。"
+                    : "当前没有需要快照的业务库。"
+            } catch {
+                let failure = NSAlert()
+                failure.messageText = "恢复前快照失败"
+                failure.informativeText = """
+                \(error.localizedDescription)
+
+                没有快照就恢复，一旦选错文件将无法回退。仍要继续吗？
+                """
+                failure.alertStyle = .critical
+                failure.addButton(withTitle: "仍然恢复")
+                failure.addButton(withTitle: "取消")
+                guard failure.runModal() == .alertFirstButtonReturn else { return }
+                snapshotNote = "恢复前快照失败，已按你的选择继续（本次没有退路）。"
+            }
+
             restoringDatabase = true
             restoreProgress = 0
             restoreJob = job
@@ -109,7 +162,7 @@ extension AppModel {
                     Task { @MainActor in self.restoreProgress = value }
                 }
             }.value
-            databaseBackupStatus = "恢复完成：\(source.path)"
+            databaseBackupStatus = "恢复完成：\(source.path)　\(snapshotNote)"
             record("SQL 备份已恢复：\(source.lastPathComponent)。")
             await refreshDatabases()
         } catch {

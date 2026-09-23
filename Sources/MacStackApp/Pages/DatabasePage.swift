@@ -116,8 +116,18 @@ struct DatabasePage: View {
                         ForEach(Array(model.backupRecords.prefix(8))) { record in
                             HStack {
                                 VStack(alignment: .leading) {
-                                    Text(record.database).font(.headline)
-                                    Text("\(record.automatic ? "自动" : "手动") · \(record.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))")
+                                    HStack(spacing: 6) {
+                                        Text(record.database).font(.headline)
+                                        if record.preRestoreSnapshot {
+                                            Text("恢复前快照")
+                                                .font(.caption2.bold())
+                                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                                .background(Color.orange.opacity(0.2))
+                                                .foregroundStyle(.orange)
+                                                .clipShape(Capsule())
+                                        }
+                                    }
+                                    Text("\(Self.originText(record)) · \(record.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -128,6 +138,15 @@ struct DatabasePage: View {
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    /// 备份的来源。
+    ///
+    /// 恢复前快照虽然登记为手动备份（因此不会被保留策略清理），但来源与用户主动导出的
+    /// 备份不同，需要单独说明——否则用户会疑惑「我没导过这个」。
+    private static func originText(_ record: BackupRecord) -> String {
+        if record.preRestoreSnapshot { return "恢复前自动生成 · 不会被保留策略清理" }
+        return record.automatic ? "自动" : "手动"
     }
 }
 

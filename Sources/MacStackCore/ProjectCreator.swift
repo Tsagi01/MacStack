@@ -79,16 +79,23 @@ public struct PHPProjectCreator: Sendable {
         let staging = canonicalParent.appendingPathComponent(".macstack-project-\(UUID().uuidString)", isDirectory: true)
         defer { try? files.removeItem(at: staging) }
         let publicRoot = staging.appendingPathComponent("public", isDirectory: true)
-        let assets = publicRoot.appendingPathComponent("assets", isDirectory: true)
+        let css = publicRoot.appendingPathComponent("css", isDirectory: true)
+        let js = publicRoot.appendingPathComponent("js", isDirectory: true)
+        let images = publicRoot.appendingPathComponent("images", isDirectory: true)
         let config = staging.appendingPathComponent("config", isDirectory: true)
-        try files.createDirectory(at: assets, withIntermediateDirectories: true)
-        try files.createDirectory(at: config, withIntermediateDirectories: true)
+        for directory in [css, js, images, config] {
+            try files.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
 
         let databaseLabel = safeDatabase.map { "数据库：\($0)" } ?? "数据库：暂未创建"
+        // 刻意**不**写 `date_default_timezone_set`。
+        //
+        // 这里原本硬编码 `Asia/Shanghai`，会覆盖用户在设置里配置的 PHP 时区。
+        // 时区的唯一来源是 MacStack 生成的 php.ini（`date.timezone = <resolvedTimezone>`），
+        // 项目里再写一次就会与之冲突——而且换台机器跑时那个硬编码值还是错的。
         let index = """
         <?php
         declare(strict_types=1);
-        date_default_timezone_set('Asia/Shanghai');
         $title = '欢迎使用 \(phpSingleQuoted(safeName))';
         ?>
         <!doctype html>
@@ -97,7 +104,7 @@ public struct PHPProjectCreator: Sendable {
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <title><?= htmlspecialchars($title, ENT_QUOTES, 'UTF-8') ?></title>
-          <link rel="stylesheet" href="assets/style.css">
+          <link rel="stylesheet" href="css/style.css">
         </head>
         <body>
           <main>
@@ -107,6 +114,7 @@ public struct PHPProjectCreator: Sendable {
             <p>\(htmlEscaped(databaseLabel))</p>
             <p>编辑 <code>public/index.php</code>，刷新浏览器即可看到结果。</p>
           </main>
+          <script src="js/app.js" defer></script>
         </body>
         </html>
         """
@@ -120,13 +128,41 @@ public struct PHPProjectCreator: Sendable {
         code { color: #77e0d5; }
         """
         let databaseExample = Self.pdoTemplate(databaseName: safeDatabase ?? "YOUR_DATABASE", databasePort: databasePort)
+        let script = """
+        // 在这里写你的前端脚本。下面这行会在浏览器控制台打印，
+        // 用来确认 public/js/app.js 已经被加载。
+        console.log('MacStack：js/app.js 已加载');
+        """
         let readme = """
         # \(safeName)
 
         这是由 MacStack 创建的 PHP 项目。
 
-        - 浏览器入口：`public/index.php`
-        - 样式：`public/assets/style.css`
+        ## 目录结构
+
+        ```
+        public/             ← 网页公开目录，浏览器只能访问到这里
+          index.php         ← 首页
+          css/style.css     ← 样式
+          js/app.js         ← 前端脚本
+          images/           ← 图片放这里
+        config/
+          database.example.php   ← 数据库连接示例
+        README.md
+        ```
+
+        ## 怎么放文件
+
+        - 图片放进 `public/images/`，在 HTML 里用 `/images/photo.jpg` 引用。
+        - 样式写进 `public/css/style.css`。
+        - 脚本写进 `public/js/app.js`。
+        - 新增的 CSS/JS 文件也可以放在这两个目录里，引用时写成 `/css/名字.css`、`/js/名字.js`。
+
+        移动文件后记得同步改 `public/index.php` 里的引用，否则浏览器会 404。
+
+        ## 其他
+
+        - 时区跟随 MacStack 设置里的「PHP 时区」，项目里不要重复写 `date_default_timezone_set`。
         - 数据库连接示例：`config/database.example.php`
         - 不要把真实数据库密码提交到 Git；复制示例后从环境变量读取密码。
 
@@ -134,7 +170,10 @@ public struct PHPProjectCreator: Sendable {
         """
         let output: [(String, String)] = [
             ("public/index.php", index + "\n"),
-            ("public/assets/style.css", style + "\n"),
+            ("public/css/style.css", style + "\n"),
+            ("public/js/app.js", script + "\n"),
+            // 空目录不会被 Git 跟踪，放一个占位文件，让用户克隆后 images/ 仍然存在。
+            ("public/images/.gitkeep", ""),
             ("config/database.example.php", databaseExample),
             ("README.md", readme + "\n"),
             (".gitignore", ".DS_Store\n.env\nconfig/database.php\n")
