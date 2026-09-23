@@ -81,6 +81,9 @@ public final class DatabaseRestoreJob: @unchecked Sendable {
         next.standardError = errorHandle
         lock.lock(); process = next; lock.unlock()
         try next.run()
+        // 子进程可能在我们写完之前就退出（mariadb 客户端遇错即停），那时管道已断。
+        // 把这一个 fd 设成「不触发 SIGPIPE」，让写入变成可处理的 EPIPE 而不是杀死进程。
+        ProcessSignalBaseline.disableSIGPIPE(on: inputPipe.fileHandleForWriting)
 
         var completed: Int64 = 0
         do {

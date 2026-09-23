@@ -145,7 +145,11 @@ struct MacStackCLI {
                 }
             }
         } catch {
-            FileHandle.standardError.write(Data("MacStack：\(error.localizedDescription)\n".utf8))
+            // 用抛错版写入。非抛错的 `write(_:)` 在断管道上抛 NSException，
+            // Swift 接不住 —— 那会在**报错的时候**再崩一次。
+            // 典型触发：`macstackctl ... | head`，head 退出后我们的 stderr 就是断管道。
+            // 这里本就是在报错，写不出去就安静退出，不能再把错误变成崩溃。
+            try? FileHandle.standardError.write(contentsOf: Data("MacStack：\(error.localizedDescription)\n".utf8))
             exit(1)
         }
     }

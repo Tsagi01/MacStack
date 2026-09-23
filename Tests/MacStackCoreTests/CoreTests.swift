@@ -3004,3 +3004,58 @@ private func probeFreePort() -> Int? {
         "只剩 TIME_WAIT 残留时被判为不可用——「停服后立刻重新启用」会被误拒"
     )
 }
+
+// MARK: - 命令执行器的写入路径
+
+/// 子进程提前退出时，写入 stdin 失败**不能**变成崩溃。
+///
+/// 非抛错的 `FileHandle.write(_:)` 在断管道上抛的是 **NSException**，Swift 接不住它，
+/// 进程会直接终止（实测 SIGABRT 134）。`FoundationCommandRunner` 原先用的就是它。
+///
+/// 触发场景很现实：SQL 第一句报错时，mariadb 客户端在批处理模式下遇错即停。
+///
+/// **注意这条测试的失败形态**：如果修复被回退，测试进程会以 SIGABRT 中止，
+/// 而不是给出普通的断言失败——那是这个问题本身的特征。
+@Test func commandRunnerSurvivesChildExitingBeforeStdinIsWritten() throws {
+    let runner = FoundationCommandRunner()
+    // `/usr/bin/true` 不读 stdin 就退出，写入必然失败。
+    let big = Data(repeating: 0x41, count: 4 * 1_024 * 1_024)
+
+    // 退出码为 0 却没读完输入 → 必须报错，不能假装成功。
+    #expect(throws: CommandRunnerError.self) {
+        try runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/true"),
+            arguments: [],
+            standardInput: big
+        )
+    }
+}
+
+/// 子进程自己报错时，报的是它的退出码与输出，而不是「管道断了」。
+///
+/// 调用方靠退出码判断失败，因此这里要能把子进程的错误原样带出去。
+@Test func commandRunnerReportsChildFailureInsteadOfWriteError() throws {
+    let runner = FoundationCommandRunner()
+    let big = Data(repeating: 0x41, count: 4 * 1_024 * 1_024)
+
+    // 不读 stdin、直接以 3 退出。
+    let output = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", "exit 3"],
+        standardInput: big
+    )
+    #expect(output.status == 3)
+}
+
+/// 正常路径不受影响：子进程读完输入、正常退出。
+@Test func commandRunnerDeliversStdinToCooperativeChild() throws {
+    let runner = FoundationCommandRunner()
+    let payload = "hello from stdin\n"
+    let output = try runner.run(
+        executable: URL(fileURLWithPath: "/bin/cat"),
+        arguments: [],
+        standardInput: Data(payload.utf8)
+    )
+    #expect(output.status == 0)
+    #expect(output.combinedOutput == payload)
+}

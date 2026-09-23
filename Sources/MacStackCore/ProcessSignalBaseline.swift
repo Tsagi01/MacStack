@@ -17,4 +17,17 @@ public enum ProcessSignalBaseline {
     public static func ignoreSIGPIPE() {
         signal(SIGPIPE, SIG_IGN)
     }
+
+    /// 让**这一个**文件描述符上的写入在管道断开时返回 `EPIPE`，而不是触发 `SIGPIPE`。
+    ///
+    /// 与 `ignoreSIGPIPE()` 的区别很重要：这是按 fd 生效的，**不依赖进程级信号处置**。
+    /// 也就是说，即使某个入口（新的命令行工具、测试进程）忘了建立基线，这里的写入
+    /// 也不会杀死进程。实测 `F_SETNOSIGPIPE` 可用。
+    ///
+    /// 因此每个「往子进程 stdin 写」的地方都应当调用它——`ignoreSIGPIPE()` 只是兜底，
+    /// 覆盖那些我们没想到的写入点，不能替代这一步。
+    @discardableResult
+    public static func disableSIGPIPE(on handle: FileHandle) -> Bool {
+        fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1) == 0
+    }
 }

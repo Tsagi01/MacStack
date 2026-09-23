@@ -39,6 +39,21 @@ public enum WebStackError: Error, LocalizedError {
     }
 }
 
+/// 命令执行器的错误。
+public enum CommandRunnerError: Error, LocalizedError {
+    case standardInputTruncated(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .standardInputTruncated(let detail):
+            """
+            命令在读完输入之前就结束了（退出码为 0），因此这次操作的结果不可信。
+            \(detail)
+            """
+        }
+    }
+}
+
 public struct FoundationCommandRunner: Sendable {
     public init() {}
 
@@ -61,13 +76,30 @@ public struct FoundationCommandRunner: Sendable {
         process.standardError = combined
         process.standardInput = input
         try process.run()
+        var writeFailure: Error?
         if let standardInput, let input {
-            input.fileHandleForWriting.write(standardInput)
+            // **必须用抛错版写入。** 非抛错的 `write(_:)` 在断管道上抛的是
+            // **NSException**，而 Swift 接不住它——实测直接终止进程（SIGABRT 134）。
+            //
+            // 同时把这一个 fd 设成「不触发 SIGPIPE」：默认处置下断管道会让进程立即死亡
+            // （实测测试进程以信号 13 退出）。按 fd 处理之后，即使调用方忘了建立
+            // 进程级基线，这里也是安全的。
+            ProcessSignalBaseline.disableSIGPIPE(on: input.fileHandleForWriting)
+            do {
+                try input.fileHandleForWriting.write(contentsOf: standardInput)
+            } catch {
+                writeFailure = error
+            }
             try? input.fileHandleForWriting.close()
         }
         // 先持续读取再等待，避免输出超过管道缓冲区时子进程与父进程互相等待。
         let data = combined.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        // 子进程自己报错时，它的输出比「管道断了」有用得多——交给调用方按退出码处理。
+        if process.terminationStatus == 0, let writeFailure {
+            // 退出码为 0 却没读完输入：命令「成功」了，但没做完整件事，结果不可信。
+            throw CommandRunnerError.standardInputTruncated(writeFailure.localizedDescription)
+        }
         return CommandOutput(
             status: process.terminationStatus,
             combinedOutput: String(decoding: data, as: UTF8.self)
