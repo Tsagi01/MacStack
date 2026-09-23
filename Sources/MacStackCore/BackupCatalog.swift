@@ -48,6 +48,38 @@ public struct BackupRecord: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// 保留策略的预演结果。
+///
+/// 只描述「按当前策略会发生什么」，不代表已经执行。
+public struct BackupPrunePreview: Equatable, Sendable {
+    /// 自动备份总数。
+    public let automaticCount: Int
+    /// 自动备份占用字节数。
+    public let automaticBytes: Int64
+    /// 按策略会被清理的份数。
+    public let removableCount: Int
+    /// 会被清理的字节数。
+    public let removableBytes: Int64
+    /// 手动备份总数（不受清理影响）。
+    public let manualCount: Int
+
+    public init(
+        automaticCount: Int,
+        automaticBytes: Int64,
+        removableCount: Int,
+        removableBytes: Int64,
+        manualCount: Int
+    ) {
+        self.automaticCount = automaticCount
+        self.automaticBytes = automaticBytes
+        self.removableCount = removableCount
+        self.removableBytes = removableBytes
+        self.manualCount = manualCount
+    }
+
+    public var hasSomethingToClean: Bool { removableCount > 0 }
+}
+
 /// 备份清单的读写。
 ///
 /// **这是 `actor`，不是 `struct`，这是有意的。**
@@ -146,6 +178,68 @@ public actor BackupCatalogStore {
         load().first { $0.automatic && $0.database == database }?.createdAt
     }
 
+    /// 选出应当清理的自动备份。
+    ///
+    /// **预览与执行共用这一套判断。** 两边各写一份的话，会出现「预览说会删 3 份、
+    /// 执行却删了 5 份」——那比没有预览更糟，因为用户会基于错误的信息做决定。
+    private func pruneSelection(
+        olderThanDays days: Int,
+        keepingAtMost maximumPerDatabase: Int,
+        now: Date
+    ) -> (removable: [BackupRecord], kept: [BackupRecord]) {
+        let cutoff = days > 0 ? now.addingTimeInterval(-TimeInterval(days) * 86_400) : nil
+
+        // load() 已按 createdAt 倒序，因此每个库的自动备份按「新 → 旧」出现，
+        // 数到第 N 个之后的就是超出份数上限的。
+        var automaticSeenPerDatabase: [String: Int] = [:]
+        var removable: [BackupRecord] = []
+        var kept: [BackupRecord] = []
+
+        for record in load() {
+            guard record.automatic else {
+                // 手动备份只受用户自己控制，不参与自动清理。
+                kept.append(record)
+                continue
+            }
+            let seen = automaticSeenPerDatabase[record.database, default: 0]
+            automaticSeenPerDatabase[record.database] = seen + 1
+
+            let expiredByAge = cutoff.map { record.createdAt < $0 } ?? false
+            let expiredByCount = maximumPerDatabase > 0 && seen >= maximumPerDatabase
+            if expiredByAge || expiredByCount {
+                removable.append(record)
+            } else {
+                kept.append(record)
+            }
+        }
+        return (removable, kept)
+    }
+
+    /// 按当前保留策略**预演**会清理掉什么，但**不删任何东西**。
+    ///
+    /// 用来在界面上告诉用户「这样设置会删掉几份、释放多少空间」，而不是等清理
+    /// 真的跑完才发现。
+    public func prunePreview(
+        olderThanDays days: Int,
+        keepingAtMost maximumPerDatabase: Int = BackupCatalogStore.maximumAutomaticBackupsPerDatabase,
+        now: Date = Date()
+    ) -> BackupPrunePreview {
+        let records = load()
+        let selection = pruneSelection(
+            olderThanDays: days,
+            keepingAtMost: maximumPerDatabase,
+            now: now
+        )
+        let automatic = records.filter(\.automatic)
+        return BackupPrunePreview(
+            automaticCount: automatic.count,
+            automaticBytes: automatic.reduce(0) { $0 + $1.byteCount },
+            removableCount: selection.removable.count,
+            removableBytes: selection.removable.reduce(0) { $0 + $1.byteCount },
+            manualCount: records.count - automatic.count
+        )
+    }
+
     /// 清理自动备份：按天数超期，或按份数超出上限。**文件与记录一起删。**
     ///
     /// 两条策略同时生效：
@@ -163,31 +257,16 @@ public actor BackupCatalogStore {
         keepingAtMost maximumPerDatabase: Int = BackupCatalogStore.maximumAutomaticBackupsPerDatabase,
         now: Date = Date()
     ) -> Int {
-        let cutoff = days > 0 ? now.addingTimeInterval(-TimeInterval(days) * 86_400) : nil
         let container = directory.standardizedFileURL.path + "/"
-
-        // load() 已按 createdAt 倒序，因此每个库的自动备份按「新 → 旧」出现，
-        // 数到第 N 个之后的就是超出份数上限的。
-        var automaticSeenPerDatabase: [String: Int] = [:]
+        let selection = pruneSelection(
+            olderThanDays: days,
+            keepingAtMost: maximumPerDatabase,
+            now: now
+        )
         var removed = 0
-        var kept: [BackupRecord] = []
+        var kept = selection.kept
 
-        for record in load() {
-            guard record.automatic else {
-                // 手动备份只受用户自己控制，不参与自动清理。
-                kept.append(record)
-                continue
-            }
-            let seen = automaticSeenPerDatabase[record.database, default: 0]
-            automaticSeenPerDatabase[record.database] = seen + 1
-
-            let expiredByAge = cutoff.map { record.createdAt < $0 } ?? false
-            let expiredByCount = maximumPerDatabase > 0 && seen >= maximumPerDatabase
-            guard expiredByAge || expiredByCount else {
-                kept.append(record)
-                continue
-            }
-
+        for record in selection.removable {
             // 只删自己备份目录里的文件。catalog 万一被改过，也不能波及目录外的路径。
             let url = URL(fileURLWithPath: record.filePath).standardizedFileURL
             guard url.path.hasPrefix(container) else {

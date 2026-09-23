@@ -36,6 +36,8 @@ final class AppModel: ObservableObject {
     @Published var restoringDatabase = false
     @Published var restoreProgress = 0.0
     @Published var backupRecords: [BackupRecord] = []
+    /// 保留策略的预演结果：按当前设置会清理掉几份、多少空间。nil 表示尚未计算。
+    @Published var backupPrunePreview: BackupPrunePreview?
     @Published var automaticBackupStatus = "自动备份未启用。"
     @Published var preparingPHPMyAdmin = false
     @Published var phpMyAdminPrepared = false
@@ -143,6 +145,7 @@ final class AppModel: ObservableObject {
         didLaunch = true
         // 备份清单在 actor 里，读取需要 await，因此不能放在同步的 init 里。
         backupRecords = await backupCatalog.load()
+        await refreshBackupPrunePreview()
         await inspect()
         await inspectDeveloperTools()
         await inspectDependencies()

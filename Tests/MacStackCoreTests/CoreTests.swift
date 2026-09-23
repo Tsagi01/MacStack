@@ -2188,3 +2188,73 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
     #expect(result.failureReason?.contains("nightly") == true)
     #expect(result.latestVersion == nil)
 }
+
+/// 预览与实际清理必须给出同一个结论，且预览**不能有任何副作用**。
+///
+/// 两边各写一份判断的话，会出现「预览说会删 3 份、执行却删了 5 份」——
+/// 那比没有预览更糟，因为用户会基于错误的信息做决定。所以两者共用 `pruneSelection`。
+@Test func prunePreviewMatchesActualPruneAndHasNoSideEffects() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupCatalogStore(directory: directory)
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+    // 5 份自动备份，分别在 10/20/30/40/50 天前；再加 1 份手动备份。
+    for index in 0..<5 {
+        let created = now.addingTimeInterval(-Double(index + 1) * 10 * 86_400)
+        let file = try await store.destination(database: "alpha", date: created)
+        try Data("payload".utf8).write(to: file)
+        _ = try await store.register(database: "alpha", file: file, automatic: true, createdAt: created)
+    }
+    let manual = try await store.destination(database: "alpha", date: now)
+    try Data("manual".utf8).write(to: manual)
+    _ = try await store.register(database: "alpha", file: manual, automatic: false, createdAt: now)
+
+    let filesBefore = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+
+    let preview = await store.prunePreview(olderThanDays: 30, keepingAtMost: 50, now: now)
+    #expect(preview.automaticCount == 5)
+    #expect(preview.manualCount == 1)
+    // 30 天策略下只有 40 天前和 50 天前那两份超期（30 天前那份正好等于阈值，不算超期）。
+    #expect(preview.removableCount == 2)
+    #expect(preview.removableBytes > 0)
+
+    // 预览不能有副作用：文件列表必须一模一样。
+    let filesAfterPreview = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+    #expect(filesAfterPreview == filesBefore, "预览不该删掉或新增任何文件")
+
+    // 执行结果必须与预览一致。
+    let removed = await store.pruneAutomaticBackups(olderThanDays: 30, keepingAtMost: 50, now: now)
+    #expect(removed == preview.removableCount, "预览说会删 \(preview.removableCount) 份，实际删了 \(removed) 份")
+
+    let after = await store.prunePreview(olderThanDays: 30, keepingAtMost: 50, now: now)
+    #expect(after.removableCount == 0)
+    #expect(after.automaticCount == 3)
+    // 手动备份始终不受影响。
+    #expect(after.manualCount == 1)
+    #expect(FileManager.default.fileExists(atPath: manual.path))
+}
+
+/// 份数上限也要出现在预览里。
+///
+/// 天数设为 0（不按天数清理）时，只有份数上限在起作用——预览必须如实反映，
+/// 否则用户会以为「0 就是不清理」。
+@Test func prunePreviewReflectsCountCapWhenAgeIsDisabled() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupCatalogStore(directory: directory)
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+
+    for index in 0..<4 {
+        let created = base.addingTimeInterval(Double(index) * 60)
+        let file = try await store.destination(database: "alpha", date: created)
+        try Data("payload".utf8).write(to: file)
+        _ = try await store.register(database: "alpha", file: file, automatic: true, createdAt: created)
+    }
+
+    let preview = await store.prunePreview(olderThanDays: 0, keepingAtMost: 2, now: base.addingTimeInterval(3_600))
+    #expect(preview.removableCount == 2, "份数上限为 2、有 4 份，应提示可清理 2 份")
+    #expect(preview.automaticCount == 4)
+}

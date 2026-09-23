@@ -28,6 +28,8 @@ extension AppModel {
         case .persistedOnly, .reconfigured:
             settings = next
             beginBackupScheduler()
+            // 保留天数可能变了，预演要跟着更新。
+            await refreshBackupPrunePreview()
             record("已保存网站清单与预设配置。")
         }
     }

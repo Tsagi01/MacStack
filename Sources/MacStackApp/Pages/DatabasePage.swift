@@ -110,6 +110,9 @@ struct DatabasePage: View {
                         Button("打开备份文件夹", systemImage: "folder") { model.openBackupDirectory() }
                     }
                     Text(model.automaticBackupStatus).font(.caption).foregroundStyle(.secondary)
+                    if let preview = model.backupPrunePreview {
+                        prunePreviewView(preview)
+                    }
                     if model.backupRecords.isEmpty {
                         Text("还没有备份记录。").foregroundStyle(.secondary)
                     } else {
@@ -138,6 +141,44 @@ struct DatabasePage: View {
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    /// 保留策略预演。
+    ///
+    /// 让用户在清理**之前**看到会发生什么，而不是等清理跑完才发现删多了。
+    /// 与真正的清理共用同一套判断（`pruneSelection`），所以数字不会对不上。
+    @ViewBuilder
+    private func prunePreviewView(_ preview: BackupPrunePreview) -> some View {
+        let days = model.settings.preferences.backupRetentionDays
+        let policy = days > 0
+            ? "保留 \(days) 天，且每个库最多 \(BackupCatalogStore.maximumAutomaticBackupsPerDatabase) 份"
+            : "不按天数清理，每个库最多 \(BackupCatalogStore.maximumAutomaticBackupsPerDatabase) 份"
+        VStack(alignment: .leading, spacing: 6) {
+            Text("保留策略：\(policy)")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                if preview.hasSomethingToClean {
+                    Text("按当前策略会清理 \(preview.removableCount) 份自动备份，释放约 \(Self.byteText(preview.removableBytes))。")
+                        .font(.caption)
+                    Button("立即清理") { Task { await model.pruneBackupsNow() } }
+                        .disabled(model.backingUpDatabase || model.restoringDatabase || model.savingSettings)
+                } else {
+                    Text("按当前策略没有需要清理的备份。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            Text("现有 \(preview.automaticCount) 份自动备份（\(Self.byteText(preview.automaticBytes))）、\(preview.manualCount) 份手动备份；手动备份不会被自动清理。")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private static func byteText(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     /// 备份的来源。
