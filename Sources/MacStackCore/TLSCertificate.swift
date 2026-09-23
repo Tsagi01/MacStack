@@ -25,6 +25,20 @@ public enum TLSCertificateError: Error, LocalizedError {
 public struct TLSCertificateManager: Sendable {
     public init() {}
 
+    /// 以 0600 预先创建一个**空的**私钥文件。
+    ///
+    /// 抽成独立方法是为了可测：真正要保证的性质（「openssl 落盘私钥时它已经是 0600」）
+    /// 在事后观测不到——openssl 退出后 `prepare` 还会再设一次权限，最终权限两种情况
+    /// 都是 0600。能确定性验证的是这一步本身：建出的文件必须是空且 0600。
+    ///
+    /// 空文件不会泄露任何东西，所以「建文件」与「chmod」之间的极短窗口是安全的。
+    static func preparePrivateKeyFile(at url: URL) throws {
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+            throw TLSCertificateError.generationFailed(-1, "无法创建私钥临时文件：\(url.path)")
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
     public func prepare(hostnames: [String], layout: RuntimeLayout = .applicationSupport()) throws -> TLSCertificate {
         let hosts = Array(Set(hostnames + ["localhost"])).sorted()
         let marker = hosts.joined(separator: "\n") + "\n"
@@ -46,6 +60,12 @@ public struct TLSCertificateManager: Sendable {
             try? files.removeItem(at: temporaryKey)
             try? files.removeItem(at: temporaryCertificate)
         }
+        // **先**把私钥文件建好并设成 0600，再让 openssl 写入。
+        //
+        // openssl 自己创建文件时用的是 `0666 & ~umask`（通常是 0644，即本机任何用户可读），
+        // 而权限是在 openssl 退出**之后**才改的——中间那段时间私钥已经落盘且全局可读。
+        // `open()` 只在文件不存在时才应用 mode 参数，所以预先建好就能让 openssl 沿用 0600。
+        try Self.preparePrivateKeyFile(at: temporaryKey)
         let names = hosts.map { "DNS:\($0)" }.joined(separator: ",") + ",IP:127.0.0.1"
         let result = try FoundationCommandRunner().run(
             executable: openssl,
@@ -56,6 +76,7 @@ public struct TLSCertificateManager: Sendable {
             ]
         )
         guard result.status == 0 else { throw TLSCertificateError.generationFailed(result.status, result.combinedOutput) }
+        // 文件是预先以 0600 建好的，这里再设一次只是兜底（例如 openssl 中途替换过文件）。
         try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporaryKey.path)
         if files.fileExists(atPath: layout.tlsPrivateKey.path) { try files.removeItem(at: layout.tlsPrivateKey) }
         if files.fileExists(atPath: layout.tlsCertificate.path) { try files.removeItem(at: layout.tlsCertificate) }

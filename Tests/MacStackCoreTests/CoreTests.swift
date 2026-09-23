@@ -2463,3 +2463,103 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
         atPath: source.appendingPathComponent("index.php").path
     ))
 }
+
+// MARK: - 本地 HTTPS 证书
+
+/// 生成的私钥最终必须是 0600，且证书包含全部主机名。
+///
+/// **这条测试不覆盖「全局可读的时间窗」。** 实测过：把「预建 0600 文件」那一步去掉，
+/// 这条测试**照样通过**——因为 `prepare` 在 openssl 退出后还会再设一次权限，
+/// 最终权限两种情况都是 0600。时间窗只有 openssl 写入到我们 chmod 之间的几毫秒，
+/// 事后观测不到，轮询也不可靠。
+///
+/// 时间窗由「预建空文件」这一步消除，该步骤本身由
+/// `tlsPrivateKeyIsPreparedEmptyWithOwnerOnlyPermissions` 覆盖。
+@Test func tlsCertificatePrivateKeyIsNeverWorldReadable() throws {
+    // 没有 openssl 就跳过（与其它依赖真实组件的测试一致）。
+    guard FileManager.default.isExecutableFile(atPath: "/usr/bin/openssl") else { return }
+
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let layout = RuntimeLayout(root: root)
+
+    let certificate = try TLSCertificateManager().prepare(
+        hostnames: ["demo.localhost", "course.localhost"],
+        layout: layout
+    )
+
+    // 私钥存在且只有属主可读写。
+    let attributes = try FileManager.default.attributesOfItem(atPath: certificate.privateKey.path)
+    let permissions = (attributes[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+    #expect(permissions == 0o600, "私钥权限是 \(String(permissions, radix: 8))，应为 600")
+
+    // 临时文件不能留下。
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: layout.tlsDirectory.path)
+        .filter { $0.hasPrefix(".localhost-") }
+    #expect(leftovers.isEmpty, "临时文件未清理：\(leftovers)")
+
+    // 证书里必须包含所有主机名与回环地址——少了它们 HTTPS 会因为域名不匹配而失败。
+    let text = try FoundationCommandRunner()
+        .run(executable: URL(fileURLWithPath: "/usr/bin/openssl"), arguments: ["x509", "-in", certificate.certificate.path, "-noout", "-text"])
+        .combinedOutput
+    for expected in ["DNS:demo.localhost", "DNS:course.localhost", "DNS:localhost", "IP Address:127.0.0.1"] {
+        #expect(text.contains(expected), "证书缺少 \(expected)")
+    }
+}
+
+/// 主机名集合没变时不应重新生成证书（否则每次准备配置都要生成一次 2048 位密钥）。
+@Test func tlsCertificateIsReusedWhenHostnamesAreUnchanged() throws {
+    guard FileManager.default.isExecutableFile(atPath: "/usr/bin/openssl") else { return }
+
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let layout = RuntimeLayout(root: root)
+    let manager = TLSCertificateManager()
+
+    _ = try manager.prepare(hostnames: ["demo.localhost"], layout: layout)
+    let firstModified = try FileManager.default
+        .attributesOfItem(atPath: layout.tlsCertificate.path)[.modificationDate] as? Date
+
+    // 顺序不同、重复项，都算同一组。
+    _ = try manager.prepare(hostnames: ["demo.localhost", "demo.localhost"], layout: layout)
+    let secondModified = try FileManager.default
+        .attributesOfItem(atPath: layout.tlsCertificate.path)[.modificationDate] as? Date
+    #expect(firstModified == secondModified, "主机名未变时不应重新生成证书")
+
+    // 主机名变了才重新生成。
+    _ = try manager.prepare(hostnames: ["other.localhost"], layout: layout)
+    let thirdModified = try FileManager.default
+        .attributesOfItem(atPath: layout.tlsCertificate.path)[.modificationDate] as? Date
+    #expect(thirdModified != secondModified, "主机名变化后应重新生成证书")
+}
+
+/// 私钥文件必须以「空 + 0600」的状态预建。
+///
+/// 这一步的作用：openssl 自己创建文件时用 `0666 & ~umask`（通常 0644，本机任何用户可读），
+/// 而权限是在它退出**之后**才改的，中间那几毫秒密钥已经落盘且全局可读。预先建好空文件
+/// 可以让 openssl 沿用 0600（`open()` 只在文件不存在时才应用 mode 参数）。
+///
+/// 空文件不泄露任何东西，所以「建文件」与「chmod」之间的窗口是安全的——这也是为什么
+/// 这里同时断言文件为空。
+///
+/// **覆盖范围说明**：「预建发生在 openssl 之前」由 `prepare` 里的调用顺序保证，
+/// 单元测试观测不到（openssl 退出后还会再设一次权限，最终状态两种情况一样）。
+/// 这条测试保证的是：有人去掉 chmod、或改成写入内容再 chmod，都会失败。
+@Test func tlsPrivateKeyIsPreparedEmptyWithOwnerOnlyPermissions() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let layout = RuntimeLayout(root: root)
+    try FileManager.default.createDirectory(at: layout.tlsDirectory, withIntermediateDirectories: true)
+
+    let key = layout.tlsDirectory.appendingPathComponent("probe.key")
+    try TLSCertificateManager.preparePrivateKeyFile(at: key)
+
+    let mode = (try FileManager.default.attributesOfItem(atPath: key.path)[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+    #expect(mode == 0o600, "预建的私钥文件权限是 \(String(mode, radix: 8))，应为 600")
+    #expect(try Data(contentsOf: key).isEmpty, "预建时文件必须是空的（此时还没有密钥内容）")
+    // 组与其他用户都不能有任何权限位。
+    #expect(mode & 0o077 == 0, "私钥不应有任何组/其他用户权限位")
+}
