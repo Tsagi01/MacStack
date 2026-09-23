@@ -29,6 +29,16 @@ MAX_DEPTH=4
 [ -x "$BREW" ] || { printf 'portable-runtime: 找不到 brew：%s\n' "$BREW" >&2; exit 1; }
 [ -d "$STAGE" ] || { printf 'portable-runtime: 暂存目录不存在：%s\n' "$STAGE" >&2; exit 1; }
 
+# `rm -rf` 之前先确认这确实是暂存运行时目录。
+#
+# 下面会删掉 `$STAGE/licenses`，而 `$STAGE` 是命令行参数——这个脚本又明确支持单独运行，
+# 传错参数就会删掉任意位置下的 `licenses/`。暂存目录必然带 manifest.json
+# （build-portable-runtime.sh 在调用本脚本之前已经放好），用它作为判据。
+[ -f "$STAGE/manifest.json" ] || {
+  printf 'portable-runtime: %s 不像是暂存运行时目录（缺少 manifest.json），拒绝删除其中的 licenses/。\n' "$STAGE" >&2
+  exit 1
+}
+
 # 每次重建，避免上一次的残留被误当成「已收集」。
 rm -rf "$LICENSES"
 mkdir -p "$LICENSES"
