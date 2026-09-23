@@ -1,0 +1,83 @@
+name: 缺陷报告
+description: 报告一个可复现的问题
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。信息越具体，越有可能一次定位到问题。
+
+        **请不要粘贴数据库密码、证书私钥或其他敏感内容。**
+
+  - type: input
+    id: version
+    attributes:
+      label: MacStack 版本
+      description: 在「设置 → 版本与更新」里可以看到，例如 `0.10.1 (build 15)`。
+      placeholder: "0.10.1 (build 15)"
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: macOS 版本与芯片
+      description: 例如「macOS 15.1，Apple M2」。
+      placeholder: "macOS 15.1，Apple M2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 按顺序写清楚每一步，包括点的是哪个按钮、改的是哪项设置。
+      placeholder: |
+        1. 启动 Web 服务
+        2. 在「网站」页添加目录 /Users/me/project
+        3. 点击「打开网站」
+        4. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望发生什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际发生了什么
+      description: 有报错文字请原样粘贴；界面问题请说明显示成了什么。
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息（可选，但很有帮助）
+      description: |
+        与网站状态有关的问题，请附上这条命令的输出——它执行与界面完全相同的探测，
+        能直接看出是连接失败、被传输安全策略拦截、还是服务端返回了异常状态：
+
+        ```sh
+        swift run macstackctl health-probe
+        ```
+
+        其它相关信息：`~/Library/Application Support/MacStack/runtime/logs/` 下的对应日志。
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我已经搜索过现有 issue，没有重复。
+          required: true
+        - label: 我粘贴的内容里不含数据库密码、证书私钥等敏感信息。
+          required: true

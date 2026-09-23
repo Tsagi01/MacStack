@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支的新推送取消尚未完成的旧运行，避免排队浪费。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    # 项目要求 macOS 14+，这里用 macos-14 runner。
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 显示工具链版本
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: 缓存 Homebrew 下载
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew/downloads
+          key: brew-${{ runner.os }}-httpd-php82
+
+      # 配置生成相关的测试会真实调用 httpd 做语法检查，因此需要本机装有它们。
+      # 这些公式是 bottled 的，安装很快。
+      - name: 安装测试所需的组件
+        run: brew install httpd php@8.2
+
+      - name: 缓存构建产物
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swift-${{ runner.os }}-${{ hashFiles('Package.swift') }}
+          restore-keys: swift-${{ runner.os }}-
+
+      - name: 构建
+        run: swift build --build-tests
+
+      # 只跑单元测试。真实启动 Apache/MariaDB 的验收套件（macstackctl 的十条命令）
+      # 需要绑定端口并写用户目录，不在 CI 范围——那是发布前在本机跑的。
+      - name: 单元测试
+        run: swift test

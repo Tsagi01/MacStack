@@ -8,6 +8,36 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$PROJECT_DIR/scripts/swift-env.sh"
+RUNTIME_STAGE="${MACSTACK_RUNTIME_STAGE:-$PROJECT_DIR/runtime/stage}"
+
+# ── 发行前合规检查 ─────────────────────────────────────────────
+#
+# 把合规变成构建流程的一部分，而不是靠人记得。
+# 本地测试打包只警告；设置 MACSTACK_NOTARY_PROFILE（即正式对外发行）时直接中止。
+readiness_failures=0
+printf '发行前检查：\n'
+if [ ! -f "$PROJECT_DIR/LICENSE" ]; then
+  printf '  ✘ 缺少 LICENSE：尚未授权他人使用与再分发（见 docs/LICENSE_DECISION.md）\n'
+  readiness_failures=$((readiness_failures + 1))
+fi
+if [ ! -f "$RUNTIME_STAGE/licenses/THIRD-PARTY.md" ]; then
+  printf '  ✘ 缺少 licenses/THIRD-PARTY.md：第三方组件清单尚未生成\n'
+  readiness_failures=$((readiness_failures + 1))
+fi
+if [ ! -f "$PROJECT_DIR/docs/SOURCE_OFFER.md" ]; then
+  printf '  ✘ 缺少 docs/SOURCE_OFFER.md：GPL-2.0 要求的源码提供说明尚未就位\n'
+  readiness_failures=$((readiness_failures + 1))
+fi
+if [ "$readiness_failures" -gt 0 ]; then
+  if [ -n "${MACSTACK_NOTARY_PROFILE:-}" ]; then
+    printf '正式发行中止：还有 %s 项合规材料未就位。\n' "$readiness_failures" >&2
+    exit 1
+  fi
+  printf '  ⚠️ 还有 %s 项未就位；本次只生成本地测试包，不用于对外分发。\n' "$readiness_failures" >&2
+else
+  printf '  ✔ 合规材料齐备\n'
+fi
+
 bash "$PROJECT_DIR/scripts/build-app.sh"
 
 APP_DIR="$BUILD_CACHE/Packaging/MacStack.app"

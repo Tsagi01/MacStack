@@ -224,6 +224,12 @@ scripts/swift-env.sh                当前进程工具链选择
 vendor/spdx/                        固定版本的 SPDX 许可证正文与 SHA-256 清单
 docs/NEXT_STEPS.md                   后续实现顺序与验收条件
 docs/IMPROVEMENT_PLAN.md             分阶段改进方案与实施状态
+docs/LICENSE_DECISION.md             许可证选择的决策材料（事实、义务、待法律判断的问题）
+docs/SOURCE_OFFER.md                 第三方源码提供说明（GPL-2.0 要求的再分发义务）
+CHANGELOG.md                         版本记录
+CONTRIBUTING.md                      构建、测试、代码约定与提交方式
+.github/workflows/ci.yml             构建与单元测试
+.github/workflows/release.yml        打标签时构建发行包并创建 Release
 ```
 
 ## 服务与权限约定
@@ -233,6 +239,19 @@ Homebrew 只提供组件，不同时通过 brew services 管理同一实例。
 默认 HTTP 8080、数据库 3307、只监听本机。数据库停止必须正常关闭。
 不能按进程名称批量杀死服务；需要验证进程身份、配置路径及所有权。
 控制器保存它直接启动的 `Process` 对象，只终止这些对象，不搜索或批量杀死同名进程。项目没有新增管理员权限规则、登录项目、后台服务或系统证书。
+
+## 许可证
+
+**尚未选定。** 仓库里目前没有 `LICENSE` 文件，因此按默认的法律状态是「保留所有权利」——
+也就是说，**目前还没有授权他人复制、修改或再分发这份代码**。
+
+这与上面的「如何参与」是矛盾的，需要处理：要么选定许可证，要么明确写出暂未授权。
+决策所需的事实、随包分发组件各自的许可证、以及由此产生的确定义务，
+整理在 [`docs/LICENSE_DECISION.md`](docs/LICENSE_DECISION.md)。
+
+其中有一条**与选哪个许可证无关**的确定义务尚未完成：随包分发 MariaDB（GPL-2.0-only）与
+phpMyAdmin 的二进制时，按 GPL-2.0 第 3 条需要同时提供对应的完整源码或书面要约。
+`licenses/` 目前只满足了署名与许可证正文随包。
 
 ## 开发进度
 

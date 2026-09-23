@@ -1,0 +1,83 @@
+name: Release
+
+# 打 `v*` 标签时构建发行包并创建 GitHub Release。
+#
+# ⚠️ 两点需要先配置，否则本工作流不会产出可分发的包：
+#
+# 1. **签名与公证**需要仓库密钥 `MACSTACK_DEVELOPER_ID_APPLICATION` 与
+#    `MACSTACK_NOTARY_PROFILE`。后者指向本机钥匙串里由 `notarytool store-credentials`
+#    创建的 profile，CI 里需要先把证书导入临时钥匙串。未配置时只产出未签名的本地包。
+#
+# 2. **`scripts/package-release.sh` 的发行前检查会中止正式发行**，直到
+#    `LICENSE`、`licenses/THIRD-PARTY.md`、`docs/SOURCE_OFFER.md` 三项齐备。
+#    这是有意的——合规材料不齐就不应该对外分发。详见 docs/LICENSE_DECISION.md。
+
+on:
+  push:
+    tags: ["v*"]
+  # 允许手动触发，用于在没有标签时验证流程本身。
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 创建 Release 需要
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 显示工具链版本
+        run: swift --version
+
+      - name: 缓存 Homebrew 下载
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew/downloads
+          key: brew-release-${{ runner.os }}
+
+      # 便携运行时从 Homebrew 的固定版本组件收集，因此这里需要先装上它们。
+      - name: 安装构建运行时所需的组件
+        run: brew install httpd php@8.2 mariadb@11.4 phpmyadmin
+
+      - name: 构建便携运行时
+        run: bash scripts/build-portable-runtime.sh
+
+      # 未配置签名密钥时，这一步仍会产出未签名的 DMG/ZIP，并在发行前检查里
+      # 给出警告（不中止）。
+      - name: 打包
+        env:
+          MACSTACK_DEVELOPER_ID_APPLICATION: ${{ secrets.MACSTACK_DEVELOPER_ID_APPLICATION }}
+          MACSTACK_NOTARY_PROFILE: ${{ secrets.MACSTACK_NOTARY_PROFILE }}
+        run: bash scripts/package-release.sh
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacStack-${{ github.ref_name }}
+          path: |
+            dist/releases/*.dmg
+            dist/releases/*.zip
+            dist/releases/*.sha256
+
+      # 发行说明里必须包含源码提供指引——这是 GPL-2.0 的要求，不是可选内容。
+      - name: 准备发行说明
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          本发行版包含 MariaDB（GPL-2.0-only）与 phpMyAdmin（GPL-2.0）的二进制。
+
+          **对应源码的获取方式见 [docs/SOURCE_OFFER.md](docs/SOURCE_OFFER.md)。**
+          如果那里列出的地址失效，请在本仓库开 issue 提出，我们会提供源码副本。
+
+          完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+          EOF
+
+      - name: 创建 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "MacStack $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/releases/*.dmg dist/releases/*.zip dist/releases/*.sha256
