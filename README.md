@@ -218,7 +218,8 @@ scripts/collect-runtime-licenses.sh 按组件收集许可证与声明文件，�
 scripts/license_manifest.py         生成许可证清单并为缺文件的组件补 SPDX 正文
 scripts/refresh-license-texts.sh    手动刷新 vendor/spdx（发行构建不联网）
 scripts/verify-portable-runtime.sh  只读检查运行时架构、动态库引用与许可证覆盖
-scripts/package-release.sh          DMG/ZIP/校验和及可选签名公证
+scripts/verify-app-bundle.sh       只读检查应用包自包含性（依赖泄漏、ATS 例外、包外链接）
+scripts/package-release.sh         发行前合规检查，然后生成 DMG/ZIP/校验和及可选签名公证
 scripts/test.sh                     选择工具链并运行测试
 scripts/swift-env.sh                当前进程工具链选择
 vendor/spdx/                        固定版本的 SPDX 许可证正文与 SHA-256 清单
@@ -408,6 +409,27 @@ README.md
 - **10 条验收命令全部通过**。
 - 新增 `prunePreviewMatchesActualPruneAndHasNoSideEffects`：预览的份数必须与随后执行的实际份数一致；**预览前后目录文件列表必须完全相同**（预览不能有副作用）；执行后再预览应为 0；手动备份始终不受影响。
 - 新增 `prunePreviewReflectsCountCapWhenAgeIsDisabled`：天数设为 0 时，份数上限仍要出现在预览里，否则用户会以为「0 就是不清理」。
+
+### 应用包自包含性检查
+
+「在没有 Homebrew 的机器上能不能跑」需要一台干净机器才能完整验证，但**依赖是否泄漏**可以提前查出来——而泄漏正是最常见的不自包含原因。
+
+新增 `scripts/verify-app-bundle.sh`，检查：
+
+- 结构完整（可执行文件、`Info.plist`、运行时 `manifest.json`）
+- `Info.plist` 必需键，以及 **localhost 的传输安全例外**（它与探测用的域名必须同时存在，脱节时应用里会请求失败而单元测试照样通过）
+- 应用二进制是 arm64，且**只链接系统框架**（不引用 `/opt/homebrew` 或 `/usr/local`）
+- 包内符号链接**不指向包外**（指向包外的链接在别的机器上必然断掉）
+- 便携运行时通过既有的 `verify-portable-runtime.sh`（复用判断，不重复实现）
+
+它已接入 `build-app.sh`，每次打包都会跑。
+
+**两处实现细节值得记下**：
+
+1. `dist/MacStack.app` 是指向构建缓存的**符号链接**，必须先用 `pwd -P` 解析成物理路径——否则 `find` 不会跟进链接，符号链接检查会**静默通过**（假阴性）。
+2. 检查本身也需要验证。实测三种破坏都能被抓到且退出码为 1：符号链接指向包外、删掉 ATS 例外、把二进制换成非 Mach-O 文件。
+
+**仍未覆盖**：真正启动一次、建站、数据库操作、重启——这些必须在干净机器上人工做。
 
 ## 本机验证记录（2026-09-14）
 

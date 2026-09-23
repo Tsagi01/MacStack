@@ -44,6 +44,9 @@ if [ "$SIGNED" -ne 1 ]; then
   exit 1
 fi
 /usr/bin/file "$APP_DIR/Contents/MacOS/MacStack"
+# 签名之后再校验整个包：依赖泄漏（Homebrew 引用、指向包外的链接、缺失的 ATS 例外）
+# 在这里就能查出来，不必等到装到干净机器上才发现。
+bash "$PROJECT_DIR/scripts/verify-app-bundle.sh" "$APP_DIR"
 mkdir -p "$PROJECT_DIR/dist"
 /usr/bin/touch "$PROJECT_DIR/dist/.metadata_never_index"
 /bin/rm -rf "$OUTPUT_APP_DIR"
