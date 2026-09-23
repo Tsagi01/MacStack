@@ -325,6 +325,18 @@ README.md
 - 新增 `backupCatalogReadsLegacyRecordsWithoutSnapshotFlag`：旧格式 `catalog.json`（无新字段）必须能读出。**这条测试的有效性验证过**——临时把可选解码改成必需解码，测试立刻以 `records.count == 1` 失败，即整份清单读不出来，与注释描述的故障现象一致。
 - 新增 `preRestoreSnapshotsSurviveRetentionPruning`：天数与份数上限都调紧，快照仍不被删。
 
+### 打包脚本：ZIP 在装订之前生成
+
+`package-release.sh` 的顺序原本是「打 ZIP → 提交公证 → 装订 `.app`」，**装订之后没有再生成 ZIP**。装订票据是写进 `.app` 包里的，所以那个 ZIP 里的 app 不含票据 —— 用户从 ZIP 解压安装后，Gatekeeper 只能联网校验，**离线时会被拒绝**。DMG 是在装订之后创建的，反而不受影响。
+
+现在装订之后会重新打包 ZIP，并**解包校验**：把 ZIP 解出来，对里面的 app 执行 `stapler validate`，确认交付物本身带票据，而不是只校验了构建缓存里的副本。
+
+**验证**：
+
+- `bash -n` 语法检查通过。
+- 用临时目录验证了两个机制：`ditto -c -k` 打包 → `ditto -x -k` 解包往返正常；`stapler validate` 对**未装订**的 app **退出码 66（失败）**。配合脚本的 `set -euo pipefail`，缺少票据会让打包**直接失败**，而不是悄悄产出一个离线装不上的包。
+- **带 Developer ID 与公证凭据的完整路径无法在本机验证**（没有证书）。这一步需要在具备凭据的环境执行一次。
+
 ## 本机验证记录（2026-09-14）
 
 ### 改进方案五个阶段实施后的完整回归
