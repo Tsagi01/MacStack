@@ -258,6 +258,44 @@ struct MacStackCLI {
         }
         print("坏 SQL 的报错检查通过：报出的是 mariadb 的错误而非「Broken pipe」。")
 
+        // 取消恢复：必须在写入过程中终止子进程，然后报出「已取消」而不是别的错误。
+        //
+        // 这条路径此前完全没有端到端覆盖，而它恰好落在最容易出问题的地方——
+        // 子进程被终止后管道断开，我们还在写（正是 SIGPIPE 崩溃所在的那条路）。
+        // 用户点「取消」是常见操作，不能只靠单元测试里那个假实现来保证。
+        let bigDump = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macstack_cancel_\(UUID().uuidString.prefix(8)).sql")
+        defer { try? FileManager.default.removeItem(at: bigDump) }
+        // 4 MB 足够：取消发生在写完**第一块（1 MB）**之后，那时还剩 3 MB 没写，
+        // 恢复必然仍在进行中。文件不必更大——回归时若取消失效，整份都会被执行。
+        var bulk = "CREATE TABLE IF NOT EXISTS `\(database)`.`cancel_probe` (v INT);\n"
+        while bulk.utf8.count < 4 * 1_024 * 1_024 {
+            bulk += "INSERT INTO `\(database)`.`cancel_probe` VALUES (1);\n"
+        }
+        try Data(bulk.utf8).write(to: bigDump)
+
+        let cancelJob = DatabaseRestoreJob(installation: installation, layout: layout)
+        let cancelPlan = try cancelJob.prepare(source: bigDump)
+        // 进度回调是 @Sendable，不能直接改捕获的局部变量，用带锁的一次性标志。
+        let cancelFlag = OneShotFlag()
+        do {
+            try cancelJob.restore(plan: cancelPlan) { completed, _ in
+                // 写完第一块就取消，此时剩余内容还没写、恢复必然还在进行中。
+                if completed >= 1_024 * 1_024, cancelFlag.fire() {
+                    cancelJob.cancel()
+                }
+            }
+            throw DatabaseBackupError.commandFailed(
+                "cancel restore", 1, "取消后恢复竟然正常返回了。"
+            )
+        } catch DatabaseBackupError.restoreCancelled {
+            // 期望：报「已取消」，而不是 EPIPE 或退出码错误。
+        }
+        guard cancelFlag.hasFired else {
+            throw DatabaseBackupError.commandFailed("cancel restore", 1, "没能在写入过程中触发取消。")
+        }
+        print("取消恢复检查通过：写入过程中取消 → 报出「已取消」，未崩溃、未卡住。")
+
         // 库名以 `--` 开头时，导出必须仍然把它当库名而不是命令行选项。
         //
         // MariaDB 接受这种库名（实测 `--evil` 可以创建），而库名是从服务器读回来的外部
@@ -838,5 +876,29 @@ struct MacStackCLI {
             throw POSIXError(.EADDRINUSE)
         }
         return descriptor
+    }
+}
+
+/// 只触发一次的标志。
+///
+/// `DatabaseRestoreJob.restore` 的进度回调是 `@Sendable`，不能直接改捕获的局部变量，
+/// 所以用一个带锁的引用类型来记录「取消是否已经触发过」。
+private final class OneShotFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    /// 第一次调用返回 true，之后返回 false。
+    func fire() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if fired { return false }
+        fired = true
+        return true
+    }
+
+    var hasFired: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return fired
     }
 }
