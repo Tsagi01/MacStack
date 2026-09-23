@@ -8,6 +8,7 @@ public enum WebsiteMigrationError: Error, LocalizedError {
     case sourceContainsSymlink(String)
     case destinationParentInvalid(String)
     case destinationExists(String)
+    case destinationInsideSource(String)
     case sourceChanged
     case verificationFailed
 
@@ -18,6 +19,8 @@ public enum WebsiteMigrationError: Error, LocalizedError {
         case .sourceContainsSymlink(let path): "网站包含符号链接，当前版本为避免复制到目录外而拒绝迁移：\(path)"
         case .destinationParentInvalid(let path): "目标位置不是可写的普通目录：\(path)"
         case .destinationExists(let path): "目标已存在，为避免覆盖而停止：\(path)"
+        case .destinationInsideSource(let path):
+            "目标位置在源网站内部：\(path)\n把网站复制到它自己的子目录里没有意义，请另选一个源目录之外的位置。"
         case .sourceChanged: "生成预览后源网站发生变化，请重新预览。"
         case .verificationFailed: "复制后的文件清单或 SHA-256 校验不一致；未发布不完整副本。"
         }
@@ -54,6 +57,7 @@ public struct WebsiteMigrator: Sendable {
         let destinationParent = destinationParent.standardizedFileURL
         try validateSource(source)
         try validateDestinationParent(destinationParent)
+        try validateNoNesting(source: source, destinationParent: destinationParent)
         let destination = destinationParent.appendingPathComponent(source.lastPathComponent, isDirectory: true)
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw WebsiteMigrationError.destinationExists(destination.path)
@@ -69,6 +73,9 @@ public struct WebsiteMigrator: Sendable {
     public func migrate(_ plan: WebsiteMigrationPlan) throws -> WebsiteMigrationResult {
         try validateSource(plan.source)
         try validateDestinationParent(plan.destination.deletingLastPathComponent())
+        // 预览通过之后目标位置仍可能被改到源内部（例如源目录被移动过），
+        // 因此这里再校验一次，而不是只依赖 prepare。
+        try validateNoNesting(source: plan.source, destinationParent: plan.destination.deletingLastPathComponent())
         guard !FileManager.default.fileExists(atPath: plan.destination.path) else {
             throw WebsiteMigrationError.destinationExists(plan.destination.path)
         }
@@ -114,6 +121,25 @@ public struct WebsiteMigrator: Sendable {
               FileManager.default.isWritableFile(atPath: url.path),
               (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
             throw WebsiteMigrationError.destinationParentInvalid(url.path)
+        }
+    }
+
+    /// 目标位置不能在源目录内部。
+    ///
+    /// 否则暂存目录会被创建在**源里面**：`migrate` 先把源复制到
+    /// `<目标上级目录>/.macstack-staging-<UUID>`，而这个暂存目录此时就在源目录里。
+    /// `copyItem` 遍历源时会遇到它自己——结果取决于 Foundation 是先枚举再复制、
+    /// 还是边走边复制，但两种都不是用户要的：前者会把进行中的副本也复制进去，
+    /// 后者一路递归下去直到路径超长或磁盘写满。而校验要等复制**完成**才会跑。
+    ///
+    /// 更重要的是：把网站复制到它自己的子目录里本来就没有意义，应当直接拒绝。
+    private func validateNoNesting(source: URL, destinationParent: URL) throws {
+        // 用 realpath 解析后再比，否则 `~/Sites` 这类符号链接会绕过检查。
+        let sourcePath = realPath(source)
+        let parentPath = realPath(destinationParent)
+        let prefix = sourcePath.hasSuffix("/") ? sourcePath : sourcePath + "/"
+        guard parentPath != sourcePath, !parentPath.hasPrefix(prefix) else {
+            throw WebsiteMigrationError.destinationInsideSource(destinationParent.path)
         }
     }
 

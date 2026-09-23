@@ -2368,3 +2368,98 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
         ), "\(executable) 应被认作 MariaDB")
     }
 }
+
+// MARK: - 网站迁移的目标位置校验
+
+/// 目标位置落在源目录内部时必须拒绝。
+///
+/// 否则暂存目录会被创建在源里面：`migrate` 先把源复制到
+/// `<目标上级目录>/.macstack-staging-<UUID>`，而这个暂存目录此时就在源目录里，
+/// `copyItem` 遍历源时会遇到它自己。而校验要等复制**完成**才会跑。
+///
+/// 调用方用的是 `NSOpenPanel`（`canChooseDirectories`），用户完全可以选到源内部的目录。
+@Test func websiteMigrationRejectsDestinationInsideSource() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("site", isDirectory: true)
+    let nested = source.appendingPathComponent("backup", isDirectory: true)
+    try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+    try Data("hello".utf8).write(to: source.appendingPathComponent("index.php"))
+
+    // 目标上级目录在源内部 → 拒绝。
+    #expect(throws: WebsiteMigrationError.self) {
+        try WebsiteMigrator().prepare(source: source, destinationParent: nested)
+    }
+    // 目标上级目录就是源本身 → 也拒绝（此时 destination 会等于 source）。
+    #expect(throws: WebsiteMigrationError.self) {
+        try WebsiteMigrator().prepare(source: source, destinationParent: source)
+    }
+    // 源内部更深的位置 → 同样拒绝。
+    let deeper = nested.appendingPathComponent("a/b", isDirectory: true)
+    try FileManager.default.createDirectory(at: deeper, withIntermediateDirectories: true)
+    #expect(throws: WebsiteMigrationError.self) {
+        try WebsiteMigrator().prepare(source: source, destinationParent: deeper)
+    }
+}
+
+/// 通过符号链接绕进源目录也要被拒绝。
+///
+/// 只比较字符串路径会漏掉这种：`destinationParent` 自己不是符号链接
+/// （所以 `validateDestinationParent` 放行），但它的路径中有一段是符号链接，
+/// 解析后落在源目录内部。必须用 `realpath` 解析后再比。
+@Test func websiteMigrationRejectsDestinationReachedThroughSymlink() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("site", isDirectory: true)
+    let insideSource = source.appendingPathComponent("backup/sub", isDirectory: true)
+    try FileManager.default.createDirectory(at: insideSource, withIntermediateDirectories: true)
+    try Data("hello".utf8).write(to: source.appendingPathComponent("index.php"))
+
+    // root/link → site/backup，于是 root/link/sub 其实就在源目录内部。
+    let link = root.appendingPathComponent("link", isDirectory: true)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source.appendingPathComponent("backup"))
+
+    // 前提确认：这个路径本身不是符号链接，因此不会被前面那道校验拦下。
+    let throughLink = link.appendingPathComponent("sub", isDirectory: true)
+    #expect((try? throughLink.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true)
+    #expect(FileManager.default.fileExists(atPath: throughLink.path))
+
+    #expect(throws: WebsiteMigrationError.self) {
+        try WebsiteMigrator().prepare(source: source, destinationParent: throughLink)
+    }
+}
+
+/// 源目录之外的兄弟位置要能正常迁移，不能被误伤。
+@Test func websiteMigrationStillAllowsSiblingDestination() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("site", isDirectory: true)
+    let sibling = root.appendingPathComponent("migrated", isDirectory: true)
+    try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
+    try Data("hello".utf8).write(to: source.appendingPathComponent("index.php"))
+    try FileManager.default.createDirectory(
+        at: source.appendingPathComponent("empty-dir"),
+        withIntermediateDirectories: true
+    )
+
+    let plan = try WebsiteMigrator().prepare(source: source, destinationParent: sibling)
+    #expect(plan.destination.lastPathComponent == "site")
+    #expect(plan.fileCount == 1)
+
+    let result = try WebsiteMigrator().migrate(plan)
+    #expect(FileManager.default.fileExists(
+        atPath: result.destination.appendingPathComponent("index.php").path
+    ))
+    // 空目录也要被复制（manifest 只记录普通文件，但 copyItem 会带上目录）。
+    #expect(FileManager.default.fileExists(
+        atPath: result.destination.appendingPathComponent("empty-dir").path
+    ))
+    // 原网站保持不变。
+    #expect(FileManager.default.fileExists(
+        atPath: source.appendingPathComponent("index.php").path
+    ))
+}
