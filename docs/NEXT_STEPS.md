@@ -68,10 +68,26 @@
 
 剩余高优先级工作：
 
-1. 已完成首版：制作免 Homebrew 的可搬移 ARM64 运行时，递归修正 290 个 Mach-O 的动态库路径，并收集组件闭包中的许可证与声明文件（`scripts/collect-runtime-licenses.sh`，逐组件校验）。组件自身不带许可证文件时从 `vendor/spdx` 取固定版本（`v3.28.0`）的 SPDX 正文补齐，取不到则构建失败。**合规结论仍未完成**：MariaDB 的 `GPL-2.0-only`、PHP 表达式中的 LGPL 条款、以及 Homebrew 的 `LicenseRef-*` 标识符都需要正式审核。后续改为上游源码可复现 CI 构建。
+1. 已完成首版：制作免 Homebrew 的可搬移 ARM64 运行时，递归修正 290 个 Mach-O 的动态库路径，并收集组件闭包中的许可证与声明文件（`scripts/collect-runtime-licenses.sh`，逐组件校验）。组件自身不带许可证文件时从 `vendor/spdx` 取固定版本（`v3.28.0`）的 SPDX 正文补齐，取不到则构建失败。
+
+   **合规结论仍未完成**，但前置材料已备齐：
+
+   - `docs/LICENSE_DECISION.md`：随包分发组件各自的许可证、由此产生的确定义务、需要法律判断的问题、MacStack 自身代码的可选方案。
+   - `docs/SOURCE_OFFER.md`：GPL-2.0 第 3 条要求的源码提供说明。四个主要组件的源码地址与 SHA-256 取自构建时的 Homebrew 公式（可用 `brew cat` 复核），动态库部分给出获取方法。
+   - `scripts/package-release.sh` 已加**发行前合规门禁**：缺 `LICENSE`、`licenses/THIRD-PARTY.md` 或 `docs/SOURCE_OFFER.md` 时，本地测试打包只警告，设置 `MACSTACK_NOTARY_PROFILE`（正式发行）时**直接中止**。
+
+   仍需所有者决定的是：许可证选择本身，以及 GPL 源码提供方式是否满足要求。
+
 2. 设计默认关闭、仅绑定回环地址、独立虚拟账号的可选 FTP 服务；不能直接开放匿名可写目录。
-3. 建立稳定 HTTPS 发布地址、签名更新清单、自动更新和回滚；数据库大版本升级保持独立。
+3. 建立稳定 HTTPS 发布地址、签名更新清单、自动更新和回滚；数据库大版本升级保持独立。**前提是第 4 项先完成**——没有签名就没有可验证的更新源，此时实现自动更新要么是死代码，要么是「装任何东西都行」的危险代码。
 4. Developer ID 正式签名和 Apple 公证需要项目所有者的 Apple Developer 证书与 Team ID。
+5. 干净环境测试：需要一台没有 Homebrew 的机器。`scripts/verify-app-bundle.sh` 已能提前查出**依赖泄漏**（这是「不自包含」最常见的原因），但它不能替代真正启动一次。
+
+## 已建立但尚未在真实环境验证的自动化
+
+- `.github/workflows/ci.yml`：macOS runner 上构建 + 单元测试。**尚未在 GitHub 上实跑过**（需要先推送）。
+- `.github/workflows/release.yml`：打标签时构建并创建 Release。**尚未实跑过**，签名与公证需要仓库密钥。
+- `scripts/verify-app-bundle.sh`：已在本机真实组装的包上验证通过，并用三种故意破坏确认它确实能报错。
 
 ## 验证边界
 
