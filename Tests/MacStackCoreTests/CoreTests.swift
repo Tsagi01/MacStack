@@ -1161,7 +1161,7 @@ private struct TestFailure: Error, LocalizedError {
 }
 
 @MainActor
-@Test func reconfigurationKeepsControllersWhenDatabaseStopFails() async {
+@Test func reconfigurationRestoresWebWhenDatabaseStopFails() async {
     let effects = RecordingReconfigurationEffects()
     effects.stopDatabaseSucceeds = false
 
@@ -1178,7 +1178,73 @@ private struct TestFailure: Error, LocalizedError {
 
     #expect(outcome.isFailure)
     #expect(!effects.controllersInvalidated)
-    #expect(effects.steps == [.validate, .stopWeb, .stopDatabase])
+    // Web 已经被停掉了，所以必须把它恢复回去。
+    //
+    // 这条断言是**有意变更**的：原先是 `[.validate, .stopWeb, .stopDatabase]`，
+    // 即停完 Web 就不再管它。那样用户读到的「已取消保存」是误导——设置确实没保存，
+    // 但网站上不去了，而消息里一个字都没提。
+    #expect(effects.steps == [.validate, .stopWeb, .stopDatabase, .restore])
+    #expect(effects.restoredPreferences == WorkspaceSettings().preferences)
+    // 设置仍然没有落盘。
+    #expect(effects.persisted == nil)
+
+    guard case .rejected(let text) = outcome else {
+        Issue.record("应被拒绝，实际：\(outcome)")
+        return
+    }
+    #expect(text.contains("Web 服务已恢复到修改前的状态"), "实际消息：\(text)")
+}
+
+/// 数据库没停成、且 Web 也恢复不了时，消息必须如实说明，不能含糊过去。
+@MainActor
+@Test func reconfigurationReportsWhenWebRestoreAlsoFails() async {
+    let effects = RecordingReconfigurationEffects()
+    effects.stopDatabaseSucceeds = false
+    effects.restoreError = SettingsError.unsupportedSchema
+
+    var next = WorkspaceSettings()
+    next.preferences.databasePort = 4406
+
+    let outcome = await ServiceReconfiguration.apply(
+        previous: WorkspaceSettings(),
+        next: next,
+        webWasRunning: true,
+        databaseWasRunning: true,
+        effects: effects
+    )
+
+    guard case .rejected(let text) = outcome else {
+        Issue.record("应被拒绝，实际：\(outcome)")
+        return
+    }
+    #expect(text.contains("Web 服务已停止，且未能自动恢复"), "实际消息：\(text)")
+    // 不能谎称已恢复。
+    #expect(!text.contains("已恢复到修改前的状态"))
+}
+
+/// Web 自己没停成时，什么都没变，消息里不该提恢复。
+@MainActor
+@Test func reconfigurationDoesNotMentionRestoreWhenWebStopItselfFails() async {
+    let effects = RecordingReconfigurationEffects()
+    effects.stopWebSucceeds = false
+
+    var next = WorkspaceSettings()
+    next.preferences.httpPort = 9090
+
+    let outcome = await ServiceReconfiguration.apply(
+        previous: WorkspaceSettings(),
+        next: next,
+        webWasRunning: true,
+        databaseWasRunning: true,
+        effects: effects
+    )
+
+    #expect(outcome.isFailure)
+    // 没走到数据库那一步，也没有恢复动作。
+    #expect(effects.steps == [.validate, .stopWeb])
+    if case .rejected(let text) = outcome {
+        #expect(!text.contains("恢复"))
+    }
 }
 
 @MainActor

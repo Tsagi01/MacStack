@@ -264,7 +264,23 @@ public struct ServiceReconfiguration: Sendable {
                 return .rejected("运行中的 Web 服务未能停止，已取消保存。请先手动停止服务再修改端口预设。")
             }
             if databaseWasRunning, await effects.stopDatabaseForReconfiguration() == false {
-                return .rejected("运行中的数据库未能正常关闭，已取消保存。请先手动停止数据库再修改端口预设。")
+                // 走到这里 Web **已经停了**，而数据库没停成。不能只说「已取消保存」——
+                // 那会让用户以为什么都没变，实际网站上不去了。把 Web 恢复到修改前的状态，
+                // 并如实说明结果。
+                var note = "运行中的数据库未能正常关闭，已取消保存。请先手动停止数据库再修改端口预设。"
+                if webWasRunning {
+                    do {
+                        try await effects.restoreWebConfiguration(
+                            preferences: previous.preferences,
+                            websites: previous.websites,
+                            wasRunning: true
+                        )
+                        note += "\nWeb 服务已恢复到修改前的状态。"
+                    } catch {
+                        note += "\nWeb 服务已停止，且未能自动恢复，请手动重新启动。"
+                    }
+                }
+                return .rejected(note)
             }
             do {
                 try effects.persistSettings(next)
