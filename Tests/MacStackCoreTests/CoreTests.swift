@@ -2258,3 +2258,113 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
     #expect(preview.removableCount == 2, "份数上限为 2、有 4 份，应提示可清理 2 份")
     #expect(preview.automaticCount == 4)
 }
+
+// MARK: - 残留服务的身份判据
+
+/// 身份判据必须同时看「可执行文件」与「命令行里的专属配置路径」。
+///
+/// 旧实现只看后者，而命令行里出现配置路径的进程**未必是服务本身**：
+/// 用户用编辑器打开这个文件、或者 `tail -f` 它，命令行里就带着这个路径。
+/// 一旦 PID 被回收并分配给那个进程，只匹配路径就会把它当成残留服务杀掉。
+@Test func residualIdentityRejectsProcessesThatMerelyMentionTheConfigPath() {
+    let config = "/Users/me/Library/Application Support/MacStack/config/httpd.conf"
+
+    // 真实的服务命令行：可执行文件与配置路径都对得上。
+    #expect(ResidualIdentity.matches(
+        executable: "/opt/homebrew/opt/httpd/bin/httpd",
+        command: "httpd -D FOREGROUND -f \(config)",
+        configurationPath: config,
+        executableNames: ResidualIdentity.apacheNames
+    ))
+
+    // 下面这些命令行都含那个路径，但**都不是** MacStack 的服务。
+    // 旧实现会把它们全部误判为残留服务。
+    //
+    // `tail -f <路径>` 尤其值得注意：它说明「开关 + 路径」这种加固也没用，
+    // 因为 `-f <路径>` 同样满足。
+    let lookalikes: [(String, String)] = [
+        ("/usr/bin/tail", "tail -f \(config)"),
+        ("/usr/bin/vim", "vim \(config)"),
+        ("/Applications/Visual Studio Code.app/Contents/MacOS/Electron", "code \(config)"),
+        ("/usr/bin/cat", "cat \(config)"),
+        ("/usr/bin/grep", "grep -n Listen \(config)")
+    ]
+    for (executable, command) in lookalikes {
+        #expect(
+            !ResidualIdentity.matches(
+                executable: executable,
+                command: command,
+                configurationPath: config,
+                executableNames: ResidualIdentity.apacheNames
+            ),
+            "「\(command)」不应被认作 MacStack 的服务"
+        )
+    }
+}
+
+/// 可执行文件名对但配置路径不对，也不能认。
+///
+/// 用户可能自己装了 Homebrew 的 httpd 跑别的站点——那是**别人的**进程。
+@Test func residualIdentityRejectsSameBinaryWithDifferentConfiguration() {
+    #expect(!ResidualIdentity.matches(
+        executable: "/opt/homebrew/opt/httpd/bin/httpd",
+        command: "httpd -D FOREGROUND -f /opt/homebrew/etc/httpd/httpd.conf",
+        configurationPath: "/Users/me/Library/Application Support/MacStack/config/httpd.conf",
+        executableNames: ResidualIdentity.apacheNames
+    ))
+}
+
+/// 三个服务各自的命令行形态都要能认出来。
+///
+/// 命令行形态取自 `LocalWebStackController` 与 `DatabaseStack` 里真实的启动参数。
+@Test func residualIdentityRecognizesEachServiceCommandLine() {
+    let root = "/Users/me/Library/Application Support/MacStack"
+
+    #expect(ResidualIdentity.matches(
+        executable: "\(root)/runtime/apache/bin/httpd",
+        command: "\(root)/runtime/apache/bin/httpd -D FOREGROUND -f \(root)/config/httpd.conf",
+        configurationPath: "\(root)/config/httpd.conf",
+        executableNames: ResidualIdentity.apacheNames
+    ))
+
+    #expect(ResidualIdentity.matches(
+        executable: "/opt/homebrew/opt/php@8.2/sbin/php-fpm",
+        command: "php-fpm --nodaemonize --fpm-config \(root)/config/php-fpm.conf --php-ini \(root)/config/php.ini",
+        configurationPath: "\(root)/config/php-fpm.conf",
+        executableNames: ResidualIdentity.phpNames
+    ))
+
+    #expect(ResidualIdentity.matches(
+        executable: "/opt/homebrew/opt/mariadb@11.4/bin/mariadbd",
+        command: "mariadbd --defaults-file=\(root)/config/mariadb.cnf",
+        configurationPath: "\(root)/config/mariadb.cnf",
+        executableNames: ResidualIdentity.databaseNames
+    ))
+
+    // `mysqld` 是 MariaDB 服务端在部分构建里的名字。
+    #expect(ResidualIdentity.matches(
+        executable: "/usr/local/opt/mariadb/bin/mysqld",
+        command: "mysqld --defaults-file=\(root)/config/mariadb.cnf",
+        configurationPath: "\(root)/config/mariadb.cnf",
+        executableNames: ResidualIdentity.databaseNames
+    ))
+}
+
+/// 符号链接解析后路径变了，但文件名不变——判据用文件名，因此不受影响。
+///
+/// Homebrew 的 `opt/<公式>` 是指向 `Cellar/<公式>/<版本>` 的符号链接，
+/// `proc_pidpath` 可能返回任一形态。用完整路径比对会在这种时候误判。
+@Test func residualIdentityIgnoresSymlinkResolution() {
+    let config = "/Users/me/Library/Application Support/MacStack/config/mariadb.cnf"
+    for executable in [
+        "/opt/homebrew/opt/mariadb@11.4/bin/mariadbd",
+        "/opt/homebrew/Cellar/mariadb@11.4/11.4.13/bin/mariadbd"
+    ] {
+        #expect(ResidualIdentity.matches(
+            executable: executable,
+            command: "mariadbd --defaults-file=\(config)",
+            configurationPath: config,
+            executableNames: ResidualIdentity.databaseNames
+        ), "\(executable) 应被认作 MariaDB")
+    }
+}
