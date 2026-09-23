@@ -139,6 +139,17 @@ struct MacStackCLI {
                     print("重复启动保护通过：没有创建第二套进程。")
                     try await controller.stopWebStack()
                     print("Apache 与 PHP-FPM 已正常停止。")
+
+                    // 停服后**立刻**重启。
+                    //
+                    // 刚才的健康检查在管理端口上留了 keep-alive 连接，停止 Apache 时由服务端
+                    // 关闭，于是服务端进入 TIME_WAIT（macOS 上约 30 秒）。Apache 设了
+                    // SO_REUSEADDR 所以应该仍能绑上——但这条路径此前没有被端到端覆盖，
+                    // 而「改完设置后重启」是最常见的操作。绑不上就会在这里失败。
+                    try await controller.startWebStack(httpPort: settings.preferences.httpPort)
+                    print("停服后立刻重启通过：端口上仍有 TIME_WAIT 残留也能正常起来。")
+                    try await controller.stopWebStack()
+                    print("重启后的停止也通过。")
                 } catch {
                     try? await controller.stopWebStack()
                     throw error
