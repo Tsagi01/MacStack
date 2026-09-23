@@ -3,8 +3,28 @@
 ## 环境要求
 
 - macOS 14 或更新版本（Apple Silicon）
-- Xcode 15 或更新版本（`#Preview` 等 SwiftUI 宏需要）
+- **完整 Xcode 15 或更新版本**（`#Preview` 等 SwiftUI 宏需要）
 - [Homebrew](https://brew.sh/)（**仅开发和构建时需要**；最终应用不依赖它）
+
+### 必须是完整 Xcode，不能只有 Command Line Tools
+
+本项目用 SwiftUI 的 `#Preview` 宏，它的宏插件**只在完整 Xcode 里**。只装了 Command Line
+Tools 时，构建会报：
+
+```
+error: external macro implementation type 'PreviewsMacros.SwiftUIView' could not be found
+for macro 'Preview(_:body:)'; plugin for module 'PreviewsMacros' not found
+```
+
+**这个错误信息很难联想到工具链**，所以先确认一下：
+
+```sh
+xcode-select -p          # 指向 /Library/Developer/CommandLineTools 就是只有 CLT
+```
+
+`scripts/swift-env.sh` 会在检测到 CLT 时自动切到已安装的完整 Xcode（只影响当前进程，
+不改动系统的 `xcode-select`），所以**下面的构建步骤都从 `source` 它开始**。
+如果机器上根本没装 Xcode，它无能为力，需要先装。
 
 ## 构建与运行
 

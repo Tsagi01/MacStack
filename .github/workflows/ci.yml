@@ -22,6 +22,26 @@ jobs:
           swift --version
           xcodebuild -version
 
+      # 本项目用 SwiftUI 的 `#Preview` 宏，它的宏插件只在完整 Xcode 里，
+      # **Command Line Tools 里没有**。选错工具链时编译器只报
+      # 「plugin for module 'PreviewsMacros' not found」——很难联想到工具链。
+      #
+      # 所以：复用项目自己的 swift-env.sh（它在检测到 CLT 时会切到完整 Xcode），
+      # 把结果写进 GITHUB_ENV 让后续步骤也生效；仍然指向 CLT 就明确失败，
+      # 而不是等构建时报那个难懂的错。
+      - name: 选择工具链
+        run: |
+          source scripts/swift-env.sh
+          if [ -n "${DEVELOPER_DIR:-}" ]; then
+            echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+            echo "已把 DEVELOPER_DIR 设为 $DEVELOPER_DIR"
+          fi
+          if xcode-select -p | grep -q CommandLineTools; then
+            echo "::error::当前选中的是 Command Line Tools。本项目需要完整 Xcode（#Preview 宏插件）。"
+            exit 1
+          fi
+          swift --version
+
       - name: 缓存 Homebrew 下载
         uses: actions/cache@v4
         with:
