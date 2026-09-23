@@ -8,6 +8,16 @@ import Foundation
 /// 用 `swift run` 直接跑（没有 app bundle）时读不到 Info.plist，此时返回
 /// 「开发构建」而不是编一个版本号——宁可显示得朴素，也不显示一个可能是错的版本。
 enum AppVersion {
+    /// 纯版本号（`CFBundleShortVersionString`），用于与线上版本**比较**。
+    ///
+    /// 与 `display` 分开：`display` 带「(build 15)」这类后缀，拿去比版本会解析失败。
+    /// 用 `swift run` 直接跑（没有 app bundle）时返回 nil。
+    static var marketing: String? {
+        let value = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
+    }
+
     static var display: String {
         let short = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

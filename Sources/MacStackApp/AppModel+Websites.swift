@@ -66,7 +66,7 @@ extension AppModel {
         catch { message = error.localizedDescription }
     }
 
-    func openApplicationFolder() {
+    func openDefaultWebsiteFolder() {
         let folder = RuntimeLayout.applicationSupport().documentRoot
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -74,6 +74,25 @@ extension AppModel {
             record("已在 Finder 中打开默认网站目录。")
         } catch {
             message = "无法打开应用文件夹：\(error.localizedDescription)"
+        }
+    }
+
+    /// 打开默认网站。与登记网站走同一个 `openWebsite` 之外的入口，因为它不在清单里。
+    func openDefaultWebsite() {
+        guard let url = defaultWebsiteURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// 用 VS Code 打开项目目录。
+    ///
+    /// 传**项目目录**而不是网页公开目录：用户要编辑的是整个项目
+    /// （含 `public/`、`config/`、`README.md`），只打开 `public/` 会看不到配置示例。
+    func openInExternalEditor(_ directory: URL) {
+        do {
+            try externalEditor.open(directory: directory)
+            record("已用 \(externalEditor.name) 打开 \(directory.lastPathComponent)。")
+        } catch {
+            message = error.localizedDescription
         }
     }
 

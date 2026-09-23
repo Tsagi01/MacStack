@@ -16,8 +16,8 @@ struct WebsitesPage: View {
                 .disabled(!model.canSave || model.savingSettings || model.creatingProject || model.changingWebsiteID != nil)
                 Button("添加网站目录…", systemImage: "plus") { model.addWebsite() }
                     .disabled(!model.canSave || model.savingSettings || model.changingWebsiteID != nil)
-                Button("Open Application Folder", systemImage: "folder") {
-                    model.openApplicationFolder()
+                Button("打开默认网站目录", systemImage: "folder") {
+                    model.openDefaultWebsiteFolder()
                 }
                 Spacer()
                 Button("刷新全部状态", systemImage: "arrow.clockwise") {
@@ -26,12 +26,15 @@ struct WebsitesPage: View {
                 .disabled(!model.webServicesRunning)
                 .help("对所有已启用的网站重新发起一次真实 HTTP 请求")
             }
-            Text(RuntimeLayout.applicationSupport().documentRoot.path)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+
+            defaultWebsiteCard
+
             if model.settings.websites.isEmpty {
-                ContentUnavailableView("还没有登记网站", systemImage: "folder.badge.plus", description: Text("选择已有项目文件夹，保存在本地网站清单中。"))
+                ContentUnavailableView(
+                    "还没有登记其他网站",
+                    systemImage: "folder.badge.plus",
+                    description: Text("上面的默认网站目录可以直接放文件使用；也可以在这里登记已有的项目文件夹。")
+                )
             }
             ForEach(model.settings.websites) { site in
                 GroupBox {
@@ -39,10 +42,13 @@ struct WebsitesPage: View {
                         HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(site.name).font(.headline)
-                            LabeledContent("项目目录", value: site.rootPath)
-                            LabeledContent("公开目录", value: site.publicRootPath)
+                            // 用「项目目录」与「网页公开目录」两个说法把「在哪里写代码」和
+                            // 「浏览器能看到哪里」区分开——这是新手最容易混淆的一处。
+                            LabeledContent("项目目录（写代码的地方）", value: site.rootPath)
+                            LabeledContent("网页公开目录（浏览器能访问的地方）", value: site.publicRootPath)
                             LabeledContent("访问地址", value: site.localURLString)
-                            websiteStatusView(site)
+                            statusView(model.websiteStatuses[site.id]
+                                ?? WebsiteStatus.notRunning(enabled: site.isEnabled, previous: nil))
                         }
                         Spacer()
                         if model.changingWebsiteID == site.id { ProgressView().controlSize(.small) }
@@ -63,6 +69,13 @@ struct WebsitesPage: View {
                             }
                             .disabled(!site.isEnabled || !model.webServicesRunning)
                             Button("项目目录", systemImage: "folder") { model.reveal(site.rootPath) }
+                            Button("用 \(model.externalEditor.name) 打开", systemImage: "chevron.left.forwardslash.chevron.right") {
+                                model.openInExternalEditor(URL(fileURLWithPath: site.rootPath))
+                            }
+                            .disabled(!model.externalEditor.isAvailable)
+                            .help(model.externalEditor.isAvailable
+                                ? "用 VS Code 打开项目目录"
+                                : "未检测到 VS Code 命令行工具")
                             Button("错误日志", systemImage: "doc.text") { model.revealWebsiteLog(site) }
                             if FileManager.default.fileExists(atPath: URL(fileURLWithPath: site.rootPath).appendingPathComponent("composer.json").path) {
                                 Button("Composer install", systemImage: "shippingbox") {
@@ -104,6 +117,51 @@ struct WebsitesPage: View {
         }
     }
 
+    /// 默认网站卡片。
+    ///
+    /// 它不在 `settings.websites` 里，但同样由 Apache 提供，用户也常直接往里面放文件。
+    /// 之前这里只有一行等宽路径，看起来不像「一个网站」，不容易意识到可以直接用。
+    private var defaultWebsiteCard: some View {
+        let root = RuntimeLayout.applicationSupport().documentRoot
+        let status = model.defaultWebsiteStatus
+            ?? WebsiteStatus.notRunning(enabled: true, previous: nil)
+        return GroupBox {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Text("默认网站").font(.headline)
+                        Text("MacStack 自带")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.teal.opacity(0.2))
+                            .foregroundStyle(.teal)
+                            .clipShape(Capsule())
+                    }
+                    LabeledContent("网页公开目录（浏览器能访问的地方）", value: root.path)
+                    LabeledContent("访问地址", value: model.defaultWebsiteURL?.absoluteString ?? "—")
+                    statusView(status)
+                }
+                HStack {
+                    Button("在 Finder 中打开", systemImage: "folder") { model.openDefaultWebsiteFolder() }
+                    Button("用 \(model.externalEditor.name) 打开", systemImage: "chevron.left.forwardslash.chevron.right") {
+                        model.openInExternalEditor(root)
+                    }
+                    .disabled(!model.externalEditor.isAvailable)
+                    .help(model.externalEditor.isAvailable
+                        ? "用 VS Code 打开这个目录"
+                        : "未检测到 VS Code 命令行工具")
+                    Button("打开网站", systemImage: "safari") { model.openDefaultWebsite() }
+                        .disabled(!model.webServicesRunning)
+                    Button("刷新状态", systemImage: "arrow.clockwise") {
+                        Task { await model.refreshWebsiteStatuses() }
+                    }
+                    .disabled(!model.webServicesRunning)
+                    Spacer()
+                }
+            }.padding(12)
+        }
+    }
+
     /// 网站状态：一行结论 + 补充说明 + 两个时间。
     ///
     /// 两个时间刻意分开显示：
@@ -112,9 +170,7 @@ struct WebsitesPage: View {
     ///
     /// 合成一个会让用户以为「刚做过检查」，而实际那次检查发生在服务还在运行时。
     @ViewBuilder
-    private func websiteStatusView(_ site: Website) -> some View {
-        let status = model.websiteStatuses[site.id]
-            ?? WebsiteStatus.notRunning(enabled: site.isEnabled, previous: nil)
+    private func statusView(_ status: WebsiteStatus) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(status.summary)
                 .font(.caption.bold())

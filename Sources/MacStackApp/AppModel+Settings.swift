@@ -107,8 +107,6 @@ extension AppModel {
             return
         }
         let websites = settings.websites.filter(\.isEnabled)
-        guard !websites.isEmpty else { return }
-
         let probe = WebsiteHealthProbe()
         let limit = max(1, Self.websiteProbeConcurrency)
         var collected: [UUID: WebsiteStatus] = [:]
@@ -130,10 +128,22 @@ extension AppModel {
             }
         }
 
+        // 默认网站也探一次。它不在 settings.websites 里，但同样由 Apache 提供。
+        var defaultStatus: WebsiteStatus?
+        if let url = defaultWebsiteURL {
+            defaultStatus = WebsiteStatus.from(await probe.probe(url))
+        }
+
         guard !Task.isCancelled else { return }
         for (id, status) in collected {
             websiteStatuses[id] = status
         }
+        if let defaultStatus { defaultWebsiteStatus = defaultStatus }
+    }
+
+    /// 默认网站的访问地址。它由管理端口的 vhost 提供。
+    var defaultWebsiteURL: URL? {
+        URL(string: "http://127.0.0.1:\(settings.preferences.httpPort)/")
     }
 
     /// 服务未运行时的状态刷新。
@@ -141,6 +151,37 @@ extension AppModel {
     /// **只更新「状态更新时间」，保留上一次真实请求的「最后检查时间」。**
     /// 两个都刷新的话，停掉服务看起来像刚做过 HTTP 检查，而实际那次检查发生在更早、
     /// 服务还在运行的时候。
+    /// 检查是否有新版本。
+    ///
+    /// 只查、只展示，**不下载、不替换、不自动打开浏览器**。自动更新要处理签名验证、
+    /// 停服、替换失败回滚，以及「MariaDB 大版本升级不能等同于程序文件回退」，
+    /// 是独立的一件事。
+    func checkForUpdate() async {
+        guard !checkingForUpdate else { return }
+        guard let current = AppVersion.marketing else {
+            updateCheckResult = UpdateCheckResult(
+                status: .failed,
+                currentVersion: "—",
+                failureReason: "当前是开发构建，没有版本号可用于比较。"
+            )
+            return
+        }
+        checkingForUpdate = true
+        defer { checkingForUpdate = false }
+        updateCheckResult = await UpdateChecker().check(currentVersion: current)
+    }
+
+    /// 打开新版本的下载页。只在用户点按钮时调用。
+    func openUpdateDownloadPage() {
+        guard let url = updateCheckResult?.releaseURL ?? UpdateChecker.releasesPage as URL? else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// 打开所有版本的列表页。
+    func openReleasesPage() {
+        NSWorkspace.shared.open(UpdateChecker.releasesPage)
+    }
+
     func updateStoppedWebsiteStatuses(summary: String? = nil) {
         let now = Date()
         for website in settings.websites {
@@ -158,6 +199,12 @@ extension AppModel {
                 )
             }
         }
+        // 默认网站同样要更新，否则它会一直显示上一次真实检查的结果。
+        defaultWebsiteStatus = WebsiteStatus.notRunning(
+            enabled: true,
+            previous: defaultWebsiteStatus,
+            now: now
+        )
     }
 
     func beginServiceMonitoring() {

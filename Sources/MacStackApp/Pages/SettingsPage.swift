@@ -121,6 +121,8 @@ struct SettingsView: View {
                 Text(model.tlsStatus).font(.caption).foregroundStyle(.secondary)
             }
             Divider()
+            updateSection
+            Divider()
             Text("本地配置文件").font(.headline)
             Text(model.store.fileURL.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
             Text("首次保存预设或登记网站时创建。配置出错时会保留原文件并禁用保存。")
@@ -148,6 +150,80 @@ struct SettingsView: View {
             expiresEnabled = modules.contains("expires")
             deflateEnabled = modules.contains("deflate")
             autoindexEnabled = modules.contains("autoindex")
+        }
+    }
+
+    /// 版本与更新。
+    ///
+    /// 只做「检查 → 看说明 → 打开下载页」，**不下载、不替换、不自动打开浏览器**。
+    /// 自动更新要处理签名验证、停服、替换失败回滚，以及「MariaDB 大版本升级不能
+    /// 等同于程序文件回退」，是独立的一件事。
+    @ViewBuilder
+    private var updateSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("版本与更新").font(.headline)
+            HStack(spacing: 12) {
+                LabeledContent("当前版本", value: AppVersion.display)
+                Button("检查更新", systemImage: "arrow.triangle.2.circlepath") {
+                    Task { await model.checkForUpdate() }
+                }
+                .disabled(model.checkingForUpdate)
+                if model.checkingForUpdate { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            if let result = model.updateCheckResult {
+                updateResultView(result)
+            } else {
+                Text("检查更新只会查询版本号并给出下载页链接，不会自动下载或替换程序。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func updateResultView(_ result: UpdateCheckResult) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            switch result.status {
+            case .upToDate:
+                Label("已是最新版本。", systemImage: "checkmark.circle")
+                    .foregroundStyle(.teal)
+            case .updateAvailable:
+                Label(
+                    "有新版本 \(result.latestVersion ?? "")\(result.latestIsPrerelease ? "（预发布）" : "")",
+                    systemImage: "arrow.down.circle"
+                )
+                .foregroundStyle(.orange)
+            case .failed:
+                // 网络不通、被限流都属于常见情况，用中性语气说明，不渲染成故障。
+                Label(result.failureReason ?? "检查更新失败。", systemImage: "info.circle")
+                    .foregroundStyle(.secondary)
+            }
+
+            if let notes = result.releaseNotes, !notes.isEmpty {
+                ScrollView {
+                    Text(notes)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 160)
+                .padding(8)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+
+            HStack(spacing: 12) {
+                if result.status == .updateAvailable {
+                    Button("打开下载页", systemImage: "arrow.up.right.square") {
+                        model.openUpdateDownloadPage()
+                    }
+                }
+                Button("查看所有版本", systemImage: "list.bullet") {
+                    model.openReleasesPage()
+                }
+                Text("检查时间 \(result.checkedAt.formatted(date: .abbreviated, time: .standard))")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
     }
 }

@@ -235,9 +235,9 @@ import Testing
     let creator = PHPProjectCreator()
     let result = try creator.create(named: "动态课程", in: directory, databaseName: "course_site", databasePort: 3307)
     #expect(FileManager.default.fileExists(atPath: result.publicRoot.appendingPathComponent("index.php").path))
-    // 7 个文件：index.php、css/style.css、js/app.js、images/.gitkeep、
+    // 8 个文件：index.php、form.php、css/style.css、js/app.js、images/.gitkeep、
     // config/database.example.php、README.md、.gitignore。
-    #expect(result.files.count == 7)
+    #expect(result.files.count == 8)
     let database = try String(contentsOf: result.root.appendingPathComponent("config/database.example.php"), encoding: .utf8)
     #expect(database.contains("dbname=course_site"))
     #expect(database.contains("port=3307"))
@@ -2003,6 +2003,7 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
     let root = project.root
     let expected = [
         "public/index.php",
+        "public/form.php",
         "public/css/style.css",
         "public/js/app.js",
         "public/images/.gitkeep",
@@ -2097,4 +2098,93 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
     let remaining = await store.load()
     #expect(remaining.contains { $0.preRestoreSnapshot }, "恢复前快照被清理掉了")
     #expect(FileManager.default.fileExists(atPath: snapshot.path))
+}
+
+/// 模板生成的 PHP 必须语法正确。
+///
+/// 模板是拼出来的字符串，一旦写错（漏分号、引号不配对、`<?php` 没闭合），
+/// 用户要到自己打开页面时才会看到一个 500，而且很难联想到是模板的问题。
+/// 这里用**真实的 PHP 二进制** lint 一遍，把问题挡在生成阶段。
+@Test func generatedPHPFilesAreSyntacticallyValid() throws {
+    let parent = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: parent) }
+    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+
+    let project = try PHPProjectCreator().create(
+        named: "demo",
+        in: parent,
+        databaseName: "demo_db",
+        databasePort: 3307
+    )
+
+    // 本机没有 Homebrew PHP 时跳过，不误报失败（与既有依赖真实组件的测试一致）。
+    guard let installation = try? WebStackResolver().resolve() else { return }
+    let runner = FoundationCommandRunner()
+    for relative in ["public/index.php", "public/form.php", "config/database.example.php"] {
+        let file = project.root.appendingPathComponent(relative)
+        let result = try runner.run(executable: installation.php, arguments: ["-l", file.path])
+        #expect(
+            result.status == 0,
+            "\(relative) 语法错误：\(result.combinedOutput)"
+        )
+    }
+}
+
+// MARK: - 版本比较与更新检查
+
+/// 版本比较必须逐段按整数比，不能按字符串比。
+///
+/// 字符串比较下 `"0.9" < "0.10"` 是 **false**（逐字符比时 `9` > `1`），
+/// 而版本意义上 `0.9` 比 `0.10` 旧。这正是「位数不同」最容易踩的坑。
+@Test func versionComparisonHandlesDifferingComponentCounts() {
+    func less(_ left: String, _ right: String) -> Bool {
+        guard let a = Version(left), let b = Version(right) else {
+            Issue.record("无法解析 \(left) 或 \(right)")
+            return false
+        }
+        return a < b
+    }
+
+    #expect(less("0.9", "0.10"))
+    #expect(less("0.10.0", "0.10.1"))
+    #expect(less("0.10.1", "0.11"))
+    #expect(less("1.0", "2.0"))
+    #expect(!less("0.10.1", "0.10.1"))
+    #expect(!less("0.11", "0.10.1"))
+    // 带 v 前缀、位数不齐都要能比。
+    #expect(less("v0.9", "v0.10"))
+    #expect(less("0.10", "0.10.1"))
+}
+
+/// 正式版比同号预发布版新。
+@Test func versionComparisonTreatsPrereleaseAsOlder() {
+    func less(_ left: String, _ right: String) -> Bool {
+        guard let a = Version(left), let b = Version(right) else { return false }
+        return a < b
+    }
+    #expect(less("0.10.0-beta.1", "0.10.0"))
+    #expect(!less("0.10.0", "0.10.0-beta.1"))
+    #expect(less("0.10.0-beta.1", "0.10.0-beta.2"))
+}
+
+/// 不是版本号的输入要返回 nil，而不是解析出一个错误的版本去参与比较。
+@Test func versionRejectsNonVersions() {
+    #expect(Version("") == nil)
+    #expect(Version("v") == nil)
+    #expect(Version("abc") == nil)
+    #expect(Version("nightly") == nil)
+    #expect(Version("0.10.1")?.components == [0, 10, 1])
+    #expect(Version("v0.10.1")?.components == [0, 10, 1])
+    #expect(Version("0.10.0-beta.1")?.prerelease == "beta.1")
+}
+
+/// 无法识别的当前版本号要给出明确失败，而不是抛异常或静默当作最新。
+///
+/// 这条不需要联网：在解析当前版本号时就会返回。
+@Test func updateCheckRejectsUnparseableCurrentVersion() async {
+    let result = await UpdateChecker().check(currentVersion: "nightly")
+    #expect(result.status == .failed)
+    #expect(result.failureReason?.contains("nightly") == true)
+    #expect(result.latestVersion == nil)
 }

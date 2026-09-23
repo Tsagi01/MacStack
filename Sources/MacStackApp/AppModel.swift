@@ -51,6 +51,13 @@ final class AppModel: ObservableObject {
     @Published var migratingLegacyDatabase: String?
     @Published var legacyDatabaseStatus = "连接正在运行的旧 XAMPP 数据库后，可按逻辑 SQL 方式复制到 MacStack。"
     @Published var websiteStatuses: [UUID: WebsiteStatus] = [:]
+    /// 默认网站（MacStack 自带的 `runtime/www`）的状态。
+    ///
+    /// 它不在 `settings.websites` 里，但同样由 Apache 提供服务，用户也常直接往这里放文件。
+    /// 只显示一行路径而不给状态，会让人以为「这个不算网站」。
+    @Published var defaultWebsiteStatus: WebsiteStatus?
+    @Published var updateCheckResult: UpdateCheckResult?
+    @Published var checkingForUpdate = false
     @Published var changingWebsiteID: UUID?
     @Published var creatingProject = false
     @Published var message: String?
@@ -70,6 +77,8 @@ final class AppModel: ObservableObject {
     let store = SettingsStore()
     private let intentStore = ServiceIntentStore()
     let backupCatalog = BackupCatalogStore()
+    /// 外部编辑器检测结果。启动时算一次即可，不需要每次点击都扫盘；因此是 `let` 而非 `@Published`。
+    let externalEditor = ExternalEditor()
     var webController: LocalWebStackController?
     var databaseController: LocalDatabaseController?
     var databaseCredentials: DatabaseCredentials?

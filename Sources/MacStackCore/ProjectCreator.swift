@@ -113,6 +113,7 @@ public struct PHPProjectCreator: Sendable {
             <p>当前服务器时间：<strong><?= date('Y-m-d H:i:s') ?></strong></p>
             <p>\(htmlEscaped(databaseLabel))</p>
             <p>编辑 <code>public/index.php</code>，刷新浏览器即可看到结果。</p>
+            <p>表单示例：<a href="form.php">form.php</a></p>
           </main>
           <script src="js/app.js" defer></script>
         </body>
@@ -126,8 +127,120 @@ public struct PHPProjectCreator: Sendable {
         p { color: #b9d2d2; line-height: 1.7; }
         .badge { display: inline-block; padding: 7px 11px; border-radius: 999px; background: #0f766e; font-weight: 700; }
         code { color: #77e0d5; }
+
+        /* 表单示例（public/form.php）用到的样式。 */
+        form { display: grid; gap: 14px; margin-top: 24px; }
+        label { display: grid; gap: 6px; color: #b9d2d2; }
+        input, textarea {
+          padding: 10px 12px; border: 1px solid #315b5b; border-radius: 10px;
+          background: #0d1718; color: #eafafa; font: inherit;
+        }
+        button {
+          justify-self: start; padding: 10px 18px; border: 0; border-radius: 999px;
+          background: #0f766e; color: #eafafa; font: inherit; font-weight: 700; cursor: pointer;
+        }
+        .errors { color: #fca5a5; }
+        .ok { color: #77e0d5; }
+        dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; }
+        dt { color: #b9d2d2; }
+        dd { margin: 0; }
         """
         let databaseExample = Self.pdoTemplate(databaseName: safeDatabase ?? "YOUR_DATABASE", databasePort: databasePort)
+        // 表单示例。目的是让学生新建项目后能直接开始作业，而不是从空文件写起。
+        // 演示三件事：接收 POST、校验输入、输出时转义。
+        let form = """
+        <?php
+        declare(strict_types=1);
+
+        // 这个文件演示一个最小可用的表单：接收 POST、校验输入、安全输出。
+        // 把它当作作业的起点——复制一份改成你要的表单即可。
+        //
+        // 注意 `htmlspecialchars`：凡是把用户输入输出到页面的地方都要用它，
+        // 否则别人可以在你的页面上注入脚本。
+
+        $errors = [];
+        $submitted = null;
+
+        // mbstring 是可选扩展，没有时退回按字节计长度，避免直接报错。
+        $length = static fn (string $value): int =>
+            function_exists('mb_strlen') ? mb_strlen($value) : strlen($value);
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $name = trim((string) ($_POST['name'] ?? ''));
+            $message = trim((string) ($_POST['message'] ?? ''));
+
+            if ($name === '') {
+                $errors[] = '请填写姓名。';
+            } elseif ($length($name) > 40) {
+                $errors[] = '姓名不能超过 40 个字。';
+            }
+
+            if ($message === '') {
+                $errors[] = '请填写留言内容。';
+            } elseif ($length($message) > 500) {
+                $errors[] = '留言不能超过 500 个字。';
+            }
+
+            if ($errors === []) {
+                $submitted = ['name' => $name, 'message' => $message];
+
+                // 想把留言存进数据库？先把 config/database.example.php 复制成
+                // config/database.php 并填好密码，再建一张表，然后去掉下面几行的注释：
+                //
+                //   require __DIR__ . '/../config/database.php';
+                //   $statement = $pdo->prepare('INSERT INTO messages (name, message) VALUES (?, ?)');
+                //   $statement->execute([$name, $message]);
+                //
+                // 用占位符（?）而不是把变量拼进 SQL，可以避免 SQL 注入。
+            }
+        }
+        ?>
+        <!doctype html>
+        <html lang="zh-CN">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>表单示例</title>
+          <link rel="stylesheet" href="css/style.css">
+        </head>
+        <body>
+          <main>
+            <span class="badge">表单示例</span>
+            <h1>留言</h1>
+
+            <?php if ($errors !== []): ?>
+              <ul class="errors">
+                <?php foreach ($errors as $error): ?>
+                  <li><?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?></li>
+                <?php endforeach; ?>
+              </ul>
+            <?php endif; ?>
+
+            <?php if ($submitted !== null): ?>
+              <p class="ok">已收到：</p>
+              <dl>
+                <dt>姓名</dt>
+                <dd><?= htmlspecialchars($submitted['name'], ENT_QUOTES, 'UTF-8') ?></dd>
+                <dt>留言</dt>
+                <dd><?= nl2br(htmlspecialchars($submitted['message'], ENT_QUOTES, 'UTF-8')) ?></dd>
+              </dl>
+            <?php endif; ?>
+
+            <form method="post" action="form.php">
+              <label>姓名
+                <input type="text" name="name" maxlength="40" required>
+              </label>
+              <label>留言
+                <textarea name="message" rows="4" maxlength="500" required></textarea>
+              </label>
+              <button type="submit">提交</button>
+            </form>
+
+            <p><a href="index.php">返回首页</a></p>
+          </main>
+        </body>
+        </html>
+        """
         let script = """
         // 在这里写你的前端脚本。下面这行会在浏览器控制台打印，
         // 用来确认 public/js/app.js 已经被加载。
@@ -143,6 +256,7 @@ public struct PHPProjectCreator: Sendable {
         ```
         public/             ← 网页公开目录，浏览器只能访问到这里
           index.php         ← 首页
+          form.php          ← 表单示例：接收 POST、校验输入、安全输出
           css/style.css     ← 样式
           js/app.js         ← 前端脚本
           images/           ← 图片放这里
@@ -160,6 +274,18 @@ public struct PHPProjectCreator: Sendable {
 
         移动文件后记得同步改 `public/index.php` 里的引用，否则浏览器会 404。
 
+        ## 表单示例
+
+        `public/form.php` 是一个最小可用的表单，演示了三件事：
+
+        1. 接收 `POST` 提交（`$_SERVER['REQUEST_METHOD']`）
+        2. 校验输入（必填、长度上限）
+        3. 输出时用 `htmlspecialchars` 转义 —— 凡是把用户输入输出到页面的地方都要转义
+
+        文件里有一段注释说明怎么把它接到数据库：复制 `config/database.example.php`
+        为 `config/database.php`，填好密码，建一张表，然后去掉那几行注释。
+        注意用占位符（`?`）而不是把变量拼进 SQL，可以避免 SQL 注入。
+
         ## 其他
 
         - 时区跟随 MacStack 设置里的「PHP 时区」，项目里不要重复写 `date_default_timezone_set`。
@@ -170,6 +296,7 @@ public struct PHPProjectCreator: Sendable {
         """
         let output: [(String, String)] = [
             ("public/index.php", index + "\n"),
+            ("public/form.php", form + "\n"),
             ("public/css/style.css", style + "\n"),
             ("public/js/app.js", script + "\n"),
             // 空目录不会被 Git 跟踪，放一个占位文件，让用户克隆后 images/ 仍然存在。
