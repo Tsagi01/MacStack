@@ -81,6 +81,24 @@ swift run macstackctl health-probe         # 真实 HTTP 探测，可复现界�
 提交前请至少跑 `swift test` 与 `sites-smoke-test`、`htaccess-smoke-test`、
 `database-backup-smoke-test`。
 
+### 注意：部分验收命令会写入真实的 MacStack 目录
+
+验收套件测的是真实组件，因此**不是全部隔离**：
+
+| 命令 | 作用位置 |
+|---|---|
+| `sites-smoke-test`、`htaccess-smoke-test` | 临时目录（`/tmp/macstack-*`），完全隔离 |
+| `prepare`、`smoke-test`、`prepare-phpmyadmin` | **`~/Library/Application Support/MacStack/runtime/`** |
+| `prepare-database`、`database-smoke-test`、`database-backup-smoke-test` | 同上，且会**启动/停止数据库、创建并删除临时库** |
+| `audit-xampp` | 只读盘点，不修改任何东西 |
+
+也就是说：**在开发机上跑这些命令会改动你已安装的 MacStack 的配置与数据库目录**。
+它们不会删除既有数据（`prepare-database` 遇到非空但未初始化的数据目录会拒绝），
+但如果你在用同一台机器上的正式版 MacStack，建议先停掉它的服务。
+
+`sites-smoke-test` / `htaccess-smoke-test` 之所以用临时目录，是因为它们要验证的是
+「双站点、端口冲突、`.htaccess` 预检」这些与具体安装位置无关的行为。
+
 ## 代码约定
 
 ### 注释写「为什么」
