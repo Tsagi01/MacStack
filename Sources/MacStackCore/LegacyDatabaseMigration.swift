@@ -73,7 +73,10 @@ public struct LegacyDatabaseConnector: Sendable {
             process.executableURL = installation.dump
             process.arguments = [
                 "--defaults-file=\(defaults.path)", "--single-transaction", "--routines", "--events", "--triggers",
-                "--hex-blob", "--default-character-set=utf8mb4", "--databases", database
+                "--hex-blob", "--default-character-set=utf8mb4",
+                // `--` 终止选项解析：库名来自旧服务器，而 MariaDB 接受以 `-` 开头的库名，
+                // 不加的话会被 mariadb-dump 当成选项（见 DatabaseBackup 里的同类修复）。
+                "--databases", "--", database
             ]
             process.standardOutput = output
             process.standardError = errors

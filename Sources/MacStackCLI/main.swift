@@ -214,6 +214,29 @@ struct MacStackCLI {
         }
         print("数据库备份恢复检查通过：数据、视图和触发器均已恢复；临时库随后删除。")
         print("流式恢复检查通过：DatabaseRestoreJob 路径的中文数据往返正常。")
+
+        // 库名以 `--` 开头时，导出必须仍然把它当库名而不是命令行选项。
+        //
+        // MariaDB 接受这种库名（实测 `--evil` 可以创建），而库名是从服务器读回来的外部
+        // 数据。不加 `--` 终止符的话，一个叫 `--result-file=/some/path` 的库会让
+        // mariadb-dump 把导出写到任意路径——已实测确认。这里用 `--evil` 验证修复生效：
+        // 没有 `--` 时 mariadb-dump 会直接报 `unknown option '--evil'`。
+        //
+        // 刻意不用 `createDatabase`（它按 MacStack 自己的严格命名规则校验），
+        // 否则造不出这个库名。
+        let dashedDatabase = "--evil"
+        try manager.executeSQL("CREATE DATABASE `\(dashedDatabase)`;")
+        defer { try? manager.executeSQL("DROP DATABASE IF EXISTS `\(dashedDatabase)`;") }
+        try manager.executeSQL("CREATE TABLE `\(dashedDatabase)`.`t` (v INT);")
+        let dashedBackup = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macstack_backup_dashed_\(UUID().uuidString.prefix(8)).sql")
+        defer { try? FileManager.default.removeItem(at: dashedBackup) }
+        try manager.exportDatabase(named: dashedDatabase, to: dashedBackup)
+        guard let dashedText = try? String(contentsOf: dashedBackup, encoding: .utf8),
+              dashedText.contains("CREATE DATABASE") else {
+            throw DatabaseBackupError.invalidBackup("以 -- 开头的库名导出结果异常：\(dashedBackup.path)")
+        }
+        print("库名以 -- 开头时的导出检查通过：被当作库名而非命令行选项。")
     }
 
     private static func runSitesSmokeTest() async throws {

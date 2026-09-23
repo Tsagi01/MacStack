@@ -2755,3 +2755,61 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
     #expect(mode & 0o077 == 0, "不应有任何组/其他用户权限位")
     #expect(try Data(contentsOf: partial).isEmpty, "创建时必须是空的")
 }
+
+// MARK: - 库名作为文件名的安全性
+
+/// 库名会拼进备份文件名，因此含路径分隔符的名字必须被拒绝。
+///
+/// MariaDB **接受**含 `/` 的库名（实测 `a/b` 可以创建），而库名是从服务器读回来的外部
+/// 数据——不校验的话 `../x` 这类名字会让备份写到目录之外。
+@Test func backupDestinationRejectsNamesThatAreNotSafePathComponents() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupCatalogStore(directory: directory)
+
+    for unsafe in ["a/b", "../x", "a\\b", "a\0b", ""] {
+        await #expect(throws: BackupCatalogError.self) {
+            try await store.destination(database: unsafe)
+        }
+    }
+}
+
+/// `..` 与 `.` 作为库名是**安全**的，不该被拒绝。
+///
+/// 它们不含路径分隔符，而拼出来的文件名是 `..-<时间戳>-<uuid>.sql`——那是**一个普通
+/// 文件名**，不是 `..` 路径组件。`standardizedFileURL` 也不会把它解析到上级目录。
+///
+/// （我第一版把 `..` 放进了「应拒绝」列表，是测试写错了：实测返回的路径仍落在备份目录内。）
+@Test func backupDestinationTreatsDotNamesAsOrdinaryFileNames() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupCatalogStore(directory: directory)
+
+    for name in ["..", "."] {
+        let url = try await store.destination(database: name)
+        #expect(
+            url.standardizedFileURL.deletingLastPathComponent().path == directory.standardizedFileURL.path,
+            "「\(name)」拼出的路径跑到了备份目录之外：\(url.path)"
+        )
+    }
+}
+
+/// 合法的库名不能被误伤。
+///
+/// 刻意**不**套用 `DatabaseBackupManager` 那套「字母开头 + 字母数字下划线」的严格规则：
+/// MariaDB 接受 `my-site`、`中文库` 这类名字，它们也都能安全用作文件名。
+@Test func backupDestinationAcceptsLegitimateDatabaseNames() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupCatalogStore(directory: directory)
+
+    for name in ["my-site", "中文库", "db.v2", "--evil", "_leading", "A1"] {
+        let url = try await store.destination(database: name)
+        // 文件名必须以库名开头，且仍然落在备份目录内。
+        #expect(url.lastPathComponent.hasPrefix(name))
+        #expect(url.deletingLastPathComponent().path == directory.standardizedFileURL.path)
+    }
+}

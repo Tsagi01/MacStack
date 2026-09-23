@@ -100,6 +100,17 @@ public struct BackupPrunePreview: Equatable, Sendable {
 /// 文件还在」的孤儿，从另一条路径回来。
 ///
 /// 改成 actor 后，所有读写自动串行化，不再需要调用方自己协调。
+public enum BackupCatalogError: Error, LocalizedError {
+    case unsafeDatabaseName(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsafeDatabaseName(let name):
+            "数据库名不能用作文件名：\(name)\n名称中不能包含路径分隔符或空字符。"
+        }
+    }
+}
+
 public actor BackupCatalogStore {
     /// 每个库保留的自动备份份数上限。
     ///
@@ -162,6 +173,19 @@ public actor BackupCatalogStore {
     }
 
     public func destination(database: String, date: Date = Date()) throws -> URL {
+        // 库名会拼进文件名，所以必须先确认它可以安全地作为一个路径组件。
+        //
+        // MariaDB **接受**含 `/` 的库名（实测 `a/b` 可以创建），而库名是从服务器读回来的
+        // 外部数据——不校验的话 `../x` 这类名字会让备份写到目录之外。
+        // 这里只拒绝路径分隔符与空字符，不套用 `DatabaseBackupManager` 那套
+        // 「字母开头 + 字母数字下划线」的严格规则：`my-site`、`中文库` 都是合法库名，
+        // 也都能安全用作文件名。
+        guard !database.isEmpty,
+              !database.contains("/"),
+              !database.contains("\\"),
+              !database.contains("\0") else {
+            throw BackupCatalogError.unsafeDatabaseName(database)
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

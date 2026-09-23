@@ -131,7 +131,11 @@ public struct DatabaseBackupManager: Sendable {
         process.executableURL = installation.dump
         process.arguments = clientArguments + [
             "--single-transaction", "--routines", "--events", "--triggers", "--hex-blob",
-            "--databases", database
+            // `--` 终止选项解析。库名是外部数据（来自服务器），而 MariaDB **接受**以 `-`
+            // 开头的库名（实测 `--evil` 可以创建）。不加 `--` 的话，一个叫
+            // `--result-file=/some/path` 的库会让 mariadb-dump 把它当选项，写到任意路径
+            // ——实测确认过。加 `--` 之后它被当成普通库名，且不限制任何合法命名。
+            "--databases", "--", database
         ]
         process.standardOutput = outputHandle
         process.standardError = errorHandle
