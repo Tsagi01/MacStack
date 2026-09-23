@@ -2931,78 +2931,87 @@ private func probeFreePort() -> Int? {
 }
 
 /// 空闲端口应报告可用。
-@Test func portAvailabilityReportsFreePortAsAvailable() throws {
-    guard let port = probeFreePort() else { return }
-    #expect(PortAvailability().isAvailable(port))
-}
-
-/// 有活监听者占着 `127.0.0.1:port` 时必须报告不可用。
-@Test func portAvailabilityDetectsLiveListenerOnLoopback() throws {
-    guard let port = probeFreePort() else { return }
-    let listener = startProbeListener(port: port)
-    guard listener >= 0 else { return }
-    defer { Darwin.close(listener) }
-
-    #expect(!PortAvailability().isAvailable(port), "有监听者却被判为可用")
-}
-
-/// **对方绑 `0.0.0.0` 时也必须报告不可用。**
-///
-/// 这条是这次修复里最容易搞错的地方：只加 `SO_REUSEADDR` 的话，绑 `127.0.0.1:port`
-/// 会**成功**（实测），于是判为「可用」——而 Apache 实际绑不上，用户看到的是
-/// 莫名其妙的启动失败，而不是一句明确的「端口被占用」。
-@Test func portAvailabilityDetectsLiveListenerOnWildcardAddress() throws {
-    guard let port = probeFreePort() else { return }
-    let listener = startProbeListener(port: port, wildcard: true)
-    guard listener >= 0 else { return }
-    defer { Darwin.close(listener) }
-
-    #expect(!PortAvailability().isAvailable(port), "通配地址上有监听者却被判为可用")
-}
-
-/// 只剩 TIME_WAIT 连接残留时，应报告**可用**。
-///
-/// 这是修复的目标场景：用户打开过网站 → 停止服务 → 立刻重新启用站点。
-/// 此时 `127.0.0.1:port` 上没有活监听者，只有约 30 秒的 TIME_WAIT 残留。
-/// 只做严格绑定的话会误报「端口被占用」，于是这个很常见的操作被拒绝——
-/// 而 Apache 自己设了 `SO_REUSEADDR`，本来绑得上。
-@Test func portAvailabilityReportsAvailableWhenOnlyTimeWaitRemains() throws {
-    guard let port = probeFreePort() else { return }
-    let listener = startProbeListener(port: port)
-    guard listener >= 0 else { return }
-
-    // 建立一条连接，然后由**服务端先关**，让服务端进入 TIME_WAIT。
-    let client = Darwin.socket(AF_INET, SOCK_STREAM, 0)
-    guard client >= 0 else { Darwin.close(listener); return }
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = in_port_t(port).bigEndian
-    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-    let connected = withUnsafePointer(to: &address) { pointer in
-        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            Darwin.connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
-        }
+// 这四条测试都需要**独占**一个端口，因此必须串行执行。
+//
+// 并行跑时它们会互相抢：一条测试从 `bind(0)` 拿到端口、读出来、关掉，
+// 另一条测试的 `bind(0)` 可能立刻又拿到同一个端口并绑住它，
+// 于是前一条的 `isAvailable` 判定为「被占用」而失败。
+// 实测：只跑这几条时 5/5 通过，混在全量套件里跑就偶发失败——正是这个竞争。
+@Suite(.serialized)
+struct PortAvailabilityTests {
+    @Test func portAvailabilityReportsFreePortAsAvailable() throws {
+        guard let port = probeFreePort() else { return }
+        #expect(PortAvailability().isAvailable(port))
     }
-    guard connected else { Darwin.close(client); Darwin.close(listener); return }
 
-    var peer = sockaddr_in()
-    var peerLength = socklen_t(MemoryLayout<sockaddr_in>.size)
-    let serverSide = withUnsafeMutablePointer(to: &peer) { pointer in
-        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            Darwin.accept(listener, $0, &peerLength)
-        }
+    /// 有活监听者占着 `127.0.0.1:port` 时必须报告不可用。
+    @Test func portAvailabilityDetectsLiveListenerOnLoopback() throws {
+        guard let port = probeFreePort() else { return }
+        let listener = startProbeListener(port: port)
+        guard listener >= 0 else { return }
+        defer { Darwin.close(listener) }
+
+        #expect(!PortAvailability().isAvailable(port), "有监听者却被判为可用")
     }
-    if serverSide >= 0 { Darwin.close(serverSide) }   // 服务端先关 → TIME_WAIT
-    Darwin.close(client)
-    Darwin.close(listener)
 
-    // 留一点时间让状态落定，然后探测。
-    usleep(150_000)
-    #expect(
-        PortAvailability().isAvailable(port),
-        "只剩 TIME_WAIT 残留时被判为不可用——「停服后立刻重新启用」会被误拒"
-    )
+    /// **对方绑 `0.0.0.0` 时也必须报告不可用。**
+    ///
+    /// 这条是这次修复里最容易搞错的地方：只加 `SO_REUSEADDR` 的话，绑 `127.0.0.1:port`
+    /// 会**成功**（实测），于是判为「可用」——而 Apache 实际绑不上，用户看到的是
+    /// 莫名其妙的启动失败，而不是一句明确的「端口被占用」。
+    @Test func portAvailabilityDetectsLiveListenerOnWildcardAddress() throws {
+        guard let port = probeFreePort() else { return }
+        let listener = startProbeListener(port: port, wildcard: true)
+        guard listener >= 0 else { return }
+        defer { Darwin.close(listener) }
+
+        #expect(!PortAvailability().isAvailable(port), "通配地址上有监听者却被判为可用")
+    }
+
+    /// 只剩 TIME_WAIT 连接残留时，应报告**可用**。
+    ///
+    /// 这是修复的目标场景：用户打开过网站 → 停止服务 → 立刻重新启用站点。
+    /// 此时 `127.0.0.1:port` 上没有活监听者，只有约 30 秒的 TIME_WAIT 残留。
+    /// 只做严格绑定的话会误报「端口被占用」，于是这个很常见的操作被拒绝——
+    /// 而 Apache 自己设了 `SO_REUSEADDR`，本来绑得上。
+    @Test func portAvailabilityReportsAvailableWhenOnlyTimeWaitRemains() throws {
+        guard let port = probeFreePort() else { return }
+        let listener = startProbeListener(port: port)
+        guard listener >= 0 else { return }
+
+        // 建立一条连接，然后由**服务端先关**，让服务端进入 TIME_WAIT。
+        let client = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard client >= 0 else { Darwin.close(listener); return }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
+        guard connected else { Darwin.close(client); Darwin.close(listener); return }
+
+        var peer = sockaddr_in()
+        var peerLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let serverSide = withUnsafeMutablePointer(to: &peer) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.accept(listener, $0, &peerLength)
+            }
+        }
+        if serverSide >= 0 { Darwin.close(serverSide) }   // 服务端先关 → TIME_WAIT
+        Darwin.close(client)
+        Darwin.close(listener)
+
+        // 留一点时间让状态落定，然后探测。
+        usleep(150_000)
+        #expect(
+            PortAvailability().isAvailable(port),
+            "只剩 TIME_WAIT 残留时被判为不可用——「停服后立刻重新启用」会被误拒"
+        )
+    }
 }
 
 // MARK: - 命令执行器的写入路径
@@ -3058,4 +3067,49 @@ private func probeFreePort() -> Int? {
     )
     #expect(output.status == 0)
     #expect(output.combinedOutput == payload)
+}
+
+// MARK: - .htaccess 预检的行尾处理
+
+/// CRLF 行尾的 `.htaccess` 必须与 LF 得到**完全相同**的结论。
+///
+/// 行首用 `trimmingCharacters(in: .whitespaces)` 去空白，而 `.whitespaces`
+/// **只含空格与制表符**，不含 `\r`（那在 `.newlines` 里）。于是 CRLF 文件每行行尾都留着
+/// `\r`，`normalizeModuleToken("mod_rewrite.c\r")` 归一出 `rewrite.c\r`，
+/// 查不到已加载模块 → `<IfModule mod_rewrite.c>` 被误判为「不生效」。
+///
+/// 后果是**漏报**：块里真正的阻塞指令被当成 inactive，预检放行，站点启用后返回 500。
+@Test func htaccessPreflightTreatsCRLFTheSameAsLF() throws {
+    // 两次扫描必须用**同一个文件路径**：findings 里嵌了文件路径，
+    // 各用一个新的临时目录的话，比较永远不相等（我第一版就是这么写错的）。
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let file = root.appendingPathComponent(".htaccess")
+
+    // mod_rewrite 已加载，所以这个块**会生效**，里面的裸 Options 是阻塞项。
+    let lines = [
+        "<IfModule mod_rewrite.c>",
+        "Options -MultiViews -Indexes",
+        "</IfModule>"
+    ]
+    func scan(lineEnding: String) throws -> [HtaccessFinding] {
+        try Data((lines.joined(separator: lineEnding) + lineEnding).utf8).write(to: file)
+        return HtaccessPreflight().scan(
+            publicRoot: root,
+            loadedModules: ["rewrite"],
+            allowsOptionsOverride: false
+        ).findings
+    }
+
+    let lf = try scan(lineEnding: "\n")
+    let crlf = try scan(lineEnding: "\r\n")
+
+    #expect(lf.count == 1, "LF 下应报出一处阻塞指令，实际：\(lf)")
+    #expect(lf.first?.isBlocking == true)
+    #expect(
+        crlf == lf,
+        "CRLF 与 LF 的结论必须一致。LF=\(lf)，CRLF=\(crlf)"
+    )
 }

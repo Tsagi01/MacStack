@@ -212,9 +212,20 @@ public struct HtaccessPreflight: Sendable {
         // 每一层 <IfModule> 的条件是否成立。空栈表示处于顶层，始终生效。
         var conditionStack: [Bool] = []
 
-        for (offset, rawLine) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+        // 先统一行尾，再按 `\n` 切分。
+        //
+        // **不能直接对原文 `split(separator: "\n")`**：Swift 的 `Character` 是**字素簇**，
+        // `"\r\n"` 是**一个** Character，因此那个分隔符对 CRLF 文本永远匹配不上——
+        // 整个文件会被当成**一行**（实测确认）。后果是 `<IfModule>` 求值拿到乱掉的
+        // token、后面的指令也不再逐行检查，**预检对 CRLF 文件等于什么都没做**，
+        // 站点带着会 500 的指令直接放行。
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        for (offset, rawLine) in normalized.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             let lineNumber = offset + 1
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.isEmpty || line.hasPrefix("#") { continue }
 
             let lowered = line.lowercased()
