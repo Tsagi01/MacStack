@@ -2563,3 +2563,70 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
     // 组与其他用户都不能有任何权限位。
     #expect(mode & 0o077 == 0, "私钥不应有任何组/其他用户权限位")
 }
+
+// MARK: - 旧数据库连接文件
+
+/// 连接文件必须以 0600 **创建**，而不是写完再 chmod。
+///
+/// `Data.write(options: .atomic)` 是先写临时文件再改名，改名到 chmod 之间文件带着默认
+/// 权限（0644），而里面已经是明文密码。
+///
+/// **覆盖范围**：这条验证「创建出来的文件是 0600」。「创建发生在写入之前」由
+/// `writeOwnerOnlyFile` 的实现顺序保证，事后观测不到（最终权限两种情况都是 0600）。
+@Test func legacyDefaultsFileIsCreatedOwnerOnly() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let file = root.appendingPathComponent("legacy.cnf")
+
+    try LegacyDatabaseConnector.writeOwnerOnlyFile(contents: "[client]\npassword=\"secret\"", to: file)
+
+    let mode = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+    #expect(mode == 0o600, "权限是 \(String(mode, radix: 8))，应为 600")
+    #expect(mode & 0o077 == 0, "不应有任何组/其他用户权限位")
+    #expect(try String(contentsOf: file, encoding: .utf8).hasPrefix("[client]"))
+}
+
+/// 密码里的引号与反斜杠必须转义，否则会破坏 `--defaults-file` 的语法。
+///
+/// 这个密码是**用户手输的**（`LegacyDatabaseMigrationView` 的 `SecureField`），
+/// 不是我们生成的十六进制串，所以必须当作不可信输入处理。
+@Test func legacyDefaultsFileEscapesQuotesAndBackslashes() throws {
+    let contents = try LegacyDatabaseConnector.defaultsFileContents(
+        LegacyDatabaseCredentials(port: 3306, username: "root", password: "a\"b\\c")
+    )
+    // 反斜杠必须先转、引号后转；顺序反了会把引号新加的转义再转一遍。
+    #expect(contents.contains(#"password="a\"b\\c""#), "实际内容：\(contents)")
+    // 只能有一行 password=，不能被注入出第二行。
+    let passwordLines = contents.split(separator: "\n").filter { $0.hasPrefix("password=") }
+    #expect(passwordLines.count == 1)
+}
+
+/// 换行、空字符与非法用户名必须被拒绝。
+///
+/// 换行能在这个文件格式里注入额外的选项行——那是唯一真正危险的东西。
+@Test func legacyDefaultsFileRejectsUnsafeCredentials() {
+    func rejects(password: String, username: String = "root", port: Int = 3306) -> Bool {
+        (try? LegacyDatabaseConnector.defaultsFileContents(
+            LegacyDatabaseCredentials(port: port, username: username, password: password)
+        )) == nil
+    }
+
+    #expect(rejects(password: "ok\ninjected=1"))
+    #expect(rejects(password: "ok\rinjected=1"))
+    #expect(rejects(password: "ok\0"))
+    // 用户名走白名单正则。
+    #expect(rejects(password: "ok", username: "root\ninjected=1"))
+    #expect(rejects(password: "ok", username: "root'"))
+    #expect(rejects(password: "ok", username: ""))
+    // 端口范围。
+    #expect(rejects(password: "ok", port: 80))
+    #expect(rejects(password: "ok", port: 70000))
+
+    // 正常的要能通过（空密码是 XAMPP 默认）。
+    #expect(!rejects(password: ""))
+    #expect(!rejects(password: "ok"))
+    #expect(!rejects(password: "a\"b\\c"))
+    #expect(!rejects(password: "带中文的密码"))
+}

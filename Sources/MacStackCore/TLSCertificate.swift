@@ -62,9 +62,15 @@ public struct TLSCertificateManager: Sendable {
         }
         // **先**把私钥文件建好并设成 0600，再让 openssl 写入。
         //
-        // openssl 自己创建文件时用的是 `0666 & ~umask`（通常是 0644，即本机任何用户可读），
-        // 而权限是在 openssl 退出**之后**才改的——中间那段时间私钥已经落盘且全局可读。
-        // `open()` 只在文件不存在时才应用 mode 参数，所以预先建好就能让 openssl 沿用 0600。
+        // openssl 自己创建文件时用的是 `0666 & ~umask`（实测 0644），而权限是在它退出
+        // **之后**才改的，中间那几毫秒私钥已经落盘。`open()` 只在文件不存在时才应用
+        // mode 参数，所以预先建好就能让 openssl 沿用 0600。
+        //
+        // 关于实际暴露面（别把这条读得比它实际更严重）：macOS 上
+        // `~/Library/Application Support` 是 0700，其他用户无法进入，因此这个窗口
+        // **当前不可利用**。之所以仍然修，是因为「私钥文件从创建起就不可被他人读取」
+        // 应当是这个文件自身的性质，而不是依赖它恰好被放在某个受保护的目录里——
+        // 换一个存放位置（或那个目录的权限被改动）就会变成真问题。
         try Self.preparePrivateKeyFile(at: temporaryKey)
         let names = hosts.map { "DNS:\($0)" }.joined(separator: ",") + ",IP:127.0.0.1"
         let result = try FoundationCommandRunner().run(

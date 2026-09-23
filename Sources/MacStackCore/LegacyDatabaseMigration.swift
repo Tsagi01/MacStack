@@ -14,6 +14,7 @@ public struct LegacyDatabaseCredentials: Sendable {
 
 public enum LegacyDatabaseMigrationError: Error, LocalizedError {
     case invalidCredentials
+    case temporaryFileUnavailable(String)
     case connectionFailed(Int32, String)
     case databaseNotFound(String)
     case dumpFailed(Int32, String)
@@ -21,6 +22,8 @@ public enum LegacyDatabaseMigrationError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidCredentials: "旧数据库端口、用户名或密码包含无法安全使用的内容。"
+        case .temporaryFileUnavailable(let path):
+            "无法创建存放旧数据库连接信息的临时文件：\(path)"
         case .connectionFailed(let status, let output): "无法连接旧 XAMPP 数据库（退出码 \(status)）：\n\(output)"
         case .databaseNotFound(let name): "旧数据库中没有找到 \(name)。"
         case .dumpFailed(let status, let output): "旧数据库逻辑导出失败（退出码 \(status)）：\n\(output)"
@@ -86,19 +89,21 @@ public struct LegacyDatabaseConnector: Sendable {
         }
     }
 
-    private func withDefaultsFile<T>(
-        _ credentials: LegacyDatabaseCredentials,
-        operation: (URL) throws -> T
-    ) throws -> T {
+    /// 校验凭据并生成 `--defaults-file` 的内容。
+    ///
+    /// 抽成独立方法是为了可测：`withDefaultsFile` 之后会真的去连旧数据库，
+    /// 测试里走不完整条路径，但转义与校验可以单独验证。
+    static func defaultsFileContents(_ credentials: LegacyDatabaseCredentials) throws -> String {
         guard (1024...65535).contains(credentials.port),
               credentials.username.range(of: "^[A-Za-z0-9_.-]{1,64}$", options: .regularExpression) != nil,
               !credentials.password.contains("\0"), !credentials.password.contains("\n"), !credentials.password.contains("\r") else {
             throw LegacyDatabaseMigrationError.invalidCredentials
         }
+        // 反斜杠必须先转，否则会把后面为引号加的转义再转一遍。
         let escaped = credentials.password
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
-        let contents = """
+        return """
         [client]
         host=127.0.0.1
         port=\(credentials.port)
@@ -106,10 +111,35 @@ public struct LegacyDatabaseConnector: Sendable {
         user=\(credentials.username)
         password="\(escaped)"
         """
+    }
+
+    /// 以 0600 **创建**文件再写入，而不是写完再 chmod。
+    ///
+    /// `Data.write(options: .atomic)` 是先写临时文件再改名，改名到 chmod 之间文件带着
+    /// 默认权限（0644），而里面已经是明文密码。一创建就带 0600 更稳。
+    ///
+    /// 实际暴露面：macOS 的 `$TMPDIR` 是 0700，其他用户进不去，所以那个窗口**当前不可
+    /// 利用**。仍然这样写，是为了让「这个文件只有属主可读」成为文件自身的性质，而不是
+    /// 依赖它恰好落在受保护的目录里。
+    static func writeOwnerOnlyFile(contents: String, to url: URL) throws {
+        guard FileManager.default.createFile(
+            atPath: url.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw LegacyDatabaseMigrationError.temporaryFileUnavailable(url.path)
+        }
+        try Data((contents + "\n").utf8).write(to: url)
+    }
+
+    private func withDefaultsFile<T>(
+        _ credentials: LegacyDatabaseCredentials,
+        operation: (URL) throws -> T
+    ) throws -> T {
+        let contents = try Self.defaultsFileContents(credentials)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("macstack-legacy-\(UUID().uuidString).cnf")
         defer { try? FileManager.default.removeItem(at: url) }
-        try Data((contents + "\n").utf8).write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try Self.writeOwnerOnlyFile(contents: contents, to: url)
         return try operation(url)
     }
 }
