@@ -95,6 +95,8 @@ final class AppModel: ObservableObject {
     var activeBackupJobs = 0
     /// 网站状态刷新任务。新一轮刷新前会取消它，避免旧探测结果覆盖新结果。
     var websiteStatusRefreshTask: Task<Void, Never>?
+    /// 每个网站最近一次手动刷新请求的身份，防止较早的响应覆盖较新的结果。
+    var websiteSingleRefreshTokens: [UUID: UUID] = [:]
     /// 网站探测的并发上限：站点多时避免串行等待，也避免一次打出几十个请求。
     static let websiteProbeConcurrency = 4
     private var didLaunch = false

@@ -82,6 +82,7 @@ extension AppModel {
     /// 2. **取消过期请求。** 新一轮刷新开始前取消上一轮，避免旧探测结果覆盖新结果。
     func refreshWebsiteStatuses() async {
         websiteStatusRefreshTask?.cancel()
+        websiteSingleRefreshTokens.removeAll()
         let task = Task { [weak self] in
             guard let self else { return }
             await self.performWebsiteStatusRefresh()
@@ -92,12 +93,20 @@ extension AppModel {
 
     /// 只刷新一个网站。用于网站卡片上的手动刷新按钮。
     func refreshWebsiteStatus(_ id: UUID) async {
-        guard let website = settings.websites.first(where: { $0.id == id }) else { return }
+        guard let website = settings.websites.first(where: { $0.id == id }), website.isEnabled else { return }
         guard webServicesRunning else {
             updateStoppedWebsiteStatuses()
             return
         }
+        // 用户主动刷单站时，以这次请求为准，不能让较早的全站巡检随后覆盖它。
+        websiteStatusRefreshTask?.cancel()
+        let token = UUID()
+        websiteSingleRefreshTokens[id] = token
         let result = await WebsiteHealthProbe().probe(website.healthCheckURL)
+        guard !Task.isCancelled, webServicesRunning,
+              websiteSingleRefreshTokens[id] == token,
+              settings.websites.first(where: { $0.id == id }) == website else { return }
+        websiteSingleRefreshTokens[id] = nil
         websiteStatuses[id] = WebsiteStatus.from(result)
     }
 
@@ -134,7 +143,7 @@ extension AppModel {
             defaultStatus = WebsiteStatus.from(await probe.probe(url))
         }
 
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, webServicesRunning else { return }
         for (id, status) in collected {
             websiteStatuses[id] = status
         }
@@ -183,6 +192,9 @@ extension AppModel {
     }
 
     func updateStoppedWebsiteStatuses(summary: String? = nil) {
+        // 停服期间未结束的 HTTP 请求不能在稍后把状态重新写成“页面正常”。
+        websiteStatusRefreshTask?.cancel()
+        websiteSingleRefreshTokens.removeAll()
         let now = Date()
         for website in settings.websites {
             if let summary, website.isEnabled {
