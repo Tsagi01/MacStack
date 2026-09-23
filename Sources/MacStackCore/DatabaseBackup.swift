@@ -29,6 +29,24 @@ public enum DatabaseBackupError: Error, LocalizedError {
 }
 
 public struct DatabaseBackupManager: Sendable {
+    /// 以 0600 创建一个只有属主可读写的空文件。
+    ///
+    /// **不能先建空文件再 chmod。** 导出用的临时文件在整个导出过程中（大库可能几分钟）
+    /// 会带着默认权限（0644），而里面是**整份数据库导出**。更要紧的是它的父目录是
+    /// **用户选择的目标目录**——可能是共享目录、外置盘或同步盘，不像
+    /// `~/Library/Application Support` 那样有 0700 兜底。
+    ///
+    /// 抽成独立方法是为了可测：调用方之后会跑 `mariadb-dump`，测试走不完整条路径。
+    static func createOwnerOnlyFile(at url: URL) throws {
+        guard FileManager.default.createFile(
+            atPath: url.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw DatabaseBackupError.invalidDestination(url.path)
+        }
+    }
+
     public static let systemDatabases: Set<String> = [
         "information_schema", "mysql", "performance_schema", "sys"
     ]
@@ -101,8 +119,8 @@ public struct DatabaseBackupManager: Sendable {
             try? FileManager.default.removeItem(at: temporary)
             try? FileManager.default.removeItem(at: errorFile)
         }
-        FileManager.default.createFile(atPath: temporary.path, contents: nil)
         FileManager.default.createFile(atPath: errorFile.path, contents: nil)
+        try Self.createOwnerOnlyFile(at: temporary)
         let outputHandle = try FileHandle(forWritingTo: temporary)
         let errorHandle = try FileHandle(forWritingTo: errorFile)
         defer {

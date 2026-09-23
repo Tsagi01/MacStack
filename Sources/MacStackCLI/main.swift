@@ -169,6 +169,20 @@ struct MacStackCLI {
         CREATE VIEW `\(database)`.`item_view` AS SELECT id, value FROM `\(database)`.`items`;
         """)
         try manager.exportDatabase(named: database, to: backup)
+        // 导出文件里是整份数据库内容，必须只有属主可读。这条断言**端到端**锁定最终权限。
+        //
+        // 它抓的是「创建时的 0600 与事后的 chmod **都**被去掉」——两者对最终权限互为冗余，
+        // 只去掉任何一个都不会失败（实测过）。所以它挡不住「去掉 chmod」，那种情况下
+        // 最终权限仍由创建时的 attributes 保证。
+        //
+        // 窗口问题（文件在导出过程中是否已经是 0600）不在断言范围内：事后观测不到。
+        // 那部分由 createOwnerOnlyFile 的调用位置保证，单元测试覆盖其本身。
+        let backupMode = (try FileManager.default.attributesOfItem(atPath: backup.path)[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+        guard backupMode == 0o600 else {
+            throw DatabaseBackupError.invalidDestination(
+                "导出文件权限是 \(String(backupMode, radix: 8))，应为 600：\(backup.path)"
+            )
+        }
         try manager.executeSQL("DROP DATABASE `\(database)`;")
         guard try !manager.listDatabases().contains(database) else {
             throw DatabaseBackupError.commandFailed("backup smoke drop", 1, "临时数据库未删除。")

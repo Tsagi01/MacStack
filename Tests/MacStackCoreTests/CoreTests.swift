@@ -2731,3 +2731,27 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
     #expect(migrated.isEnabled == false)
     #expect(migrated.hostname == "")
 }
+
+/// 数据库导出的临时文件必须以 0600 **创建**。
+///
+/// **为什么这一处比别处要紧**：它的父目录是**用户选择的目标目录**（NSSavePanel），
+/// 可能是共享目录、外置盘或同步盘——不像 `~/Library/Application Support` 那样有 0700
+/// 兜底。而文件里是**整份数据库导出**，窗口长度是整个导出过程（大库可能几分钟），
+/// 不是别的那些几毫秒。
+///
+/// **覆盖范围**：这条验证「创建出来的文件是 0600」。「创建发生在 mariadb-dump 写入之前」
+/// 由 `createOwnerOnlyFile` 的调用位置保证，事后观测不到（最终文件权限两种情况都是 0600）。
+@Test func databaseExportPartialFileIsCreatedOwnerOnly() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let partial = root.appendingPathComponent(".dump.sql.partial")
+    try DatabaseBackupManager.createOwnerOnlyFile(at: partial)
+
+    let mode = (try FileManager.default.attributesOfItem(atPath: partial.path)[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+    #expect(mode == 0o600, "权限是 \(String(mode, radix: 8))，应为 600")
+    #expect(mode & 0o077 == 0, "不应有任何组/其他用户权限位")
+    #expect(try Data(contentsOf: partial).isEmpty, "创建时必须是空的")
+}
