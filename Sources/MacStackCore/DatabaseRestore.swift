@@ -98,6 +98,17 @@ public final class DatabaseRestoreJob: @unchecked Sendable {
             if next.isRunning { next.terminate() }
             next.waitUntilExit()
             if isCancelled { throw DatabaseBackupError.restoreCancelled }
+            // 写入失败通常是因为 mariadb 已经退出——客户端在批处理模式下**遇错即停**，
+            // SQL 有语法错误就会立刻结束，管道读端关闭，后续写入抛出 EPIPE。
+            //
+            // 直接把 EPIPE（“Broken pipe”）报给用户毫无意义：真正的原因在它的 stderr 里。
+            // 所以子进程非正常退出时优先报它的错误信息，否则用户看到的是
+            // “The file couldn't be saved” 而不是 “ERROR 1064 at line 42”。
+            try? errorHandle.synchronize()
+            let childError = (try? String(contentsOf: errorFile, encoding: .utf8)) ?? ""
+            if next.terminationStatus != 0, !childError.isEmpty {
+                throw DatabaseBackupError.commandFailed("mariadb restore", next.terminationStatus, childError)
+            }
             throw error
         }
         try errorHandle.synchronize()

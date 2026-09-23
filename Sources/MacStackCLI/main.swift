@@ -5,6 +5,8 @@ import MacStackCore
 @main
 struct MacStackCLI {
     static func main() async {
+        // 与 GUI 同一套信号基线：验收套件里也会走数据库恢复，同样会遇到断管道。
+        ProcessSignalBaseline.ignoreSIGPIPE()
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
             guard let command = arguments.first,
@@ -214,6 +216,43 @@ struct MacStackCLI {
         }
         print("数据库备份恢复检查通过：数据、视图和触发器均已恢复；临时库随后删除。")
         print("流式恢复检查通过：DatabaseRestoreJob 路径的中文数据往返正常。")
+
+        // 坏 SQL 的恢复必须报出 mariadb 自己的错误，而不是「Broken pipe」。
+        //
+        // mariadb 客户端在批处理模式下**遇错即停**：SQL 有语法错误就立刻退出，
+        // 管道读端关闭，我们后续的写入抛出 EPIPE。如果直接把这个 EPIPE 报给用户，
+        // 真正的原因（ERROR 1064 at line N）就被丢掉了。
+        //
+        // 文件要足够大：mariadb 必须先退出、而我们还在写，才会触发 EPIPE。
+        // 所以第一句就写错，后面跟几 MB 的正常语句。
+        let brokenDump = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macstack_broken_\(UUID().uuidString.prefix(8)).sql")
+        defer { try? FileManager.default.removeItem(at: brokenDump) }
+        var broken = "THIS IS NOT VALID SQL;\n"
+        while broken.utf8.count < 6 * 1_024 * 1_024 {
+            broken += "SELECT 1;\n"
+        }
+        try Data(broken.utf8).write(to: brokenDump)
+
+        let brokenJob = DatabaseRestoreJob(installation: installation, layout: layout)
+        let brokenPlan = try brokenJob.prepare(source: brokenDump)
+        var brokenMessage: String?
+        do {
+            try brokenJob.restore(plan: brokenPlan) { _, _ in }
+        } catch {
+            brokenMessage = error.localizedDescription
+        }
+        guard let brokenMessage else {
+            throw DatabaseBackupError.invalidBackup("坏 SQL 的恢复竟然成功了。")
+        }
+        guard !brokenMessage.lowercased().contains("broken pipe"),
+              brokenMessage.lowercased().contains("error") else {
+            throw DatabaseBackupError.commandFailed(
+                "broken restore diagnostic", 1,
+                "坏 SQL 的报错没有体现真正原因，实际消息：\(brokenMessage)"
+            )
+        }
+        print("坏 SQL 的报错检查通过：报出的是 mariadb 的错误而非「Broken pipe」。")
 
         // 库名以 `--` 开头时，导出必须仍然把它当库名而不是命令行选项。
         //

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MacStackCore
 
 @MainActor
 final class MacStackAppDelegate: NSObject, NSApplicationDelegate {
@@ -28,6 +29,13 @@ final class MacStackAppDelegate: NSObject, NSApplicationDelegate {
 struct MacStackApp: App {
     @NSApplicationDelegateAdaptor(MacStackAppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
+
+    init() {
+        // 尽早建立信号基线：默认处置下，向读端已关闭的管道写入会**直接杀死进程**，
+        // 代码里的 catch 根本没机会执行。恢复数据库备份时会踩到（见
+        // ProcessSignalBaseline.ignoreSIGPIPE 的说明）。
+        ProcessSignalBaseline.ignoreSIGPIPE()
+    }
     var body: some Scene {
         WindowGroup("MacStack") {
             ContentView()
