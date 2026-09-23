@@ -176,7 +176,10 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var postMaxSizeMB = 80
 
     /// 自动备份的保留天数。超期的**自动**备份会被清理，手工备份不受影响。
-    /// 设为 0 表示不清理。
+    ///
+    /// 设为 0 表示不按天数清理，但**仍受每库份数上限约束**
+    /// （见 `BackupCatalogStore.maximumAutomaticBackupsPerDatabase`），
+    /// 否则自动备份会无限增长。
     public var backupRetentionDays = 30
 
     /// 按需加载的可选 Apache 模块。可选值见 `Preferences.optionalApacheModulesWhitelist`。
@@ -295,7 +298,7 @@ public enum SettingsError: Error, LocalizedError {
         case .invalidWebsiteName: "网站名称不能为空，也不能包含换行或空字符。"
         case .duplicateHostname(let hostname): "多个网站使用了同一个本地域名：\(hostname)"
         case .invalidBackupInterval: "自动备份间隔必须在 1–168 小时之间。"
-        case .invalidBackupRetention: "自动备份保留天数必须在 0–3650 之间，0 表示不清理。"
+        case .invalidBackupRetention: "自动备份保留天数必须在 0–3650 之间。0 表示不按天数清理，但仍保留每个库最近 50 份自动备份。"
         case .invalidPHPFormula: "PHP 版本预设无效。"
         case .invalidMemoryLimit: "memory_limit 必须在 32–4096 MB 之间。"
         case .invalidUploadLimit: "upload_max_filesize 必须在 1–2048 MB 之间。"

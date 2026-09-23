@@ -52,7 +52,7 @@ struct SettingsView: View {
                     Toggle("启用自动数据库备份", isOn: $automaticBackupEnabled)
                     if automaticBackupEnabled {
                         TextField("备份间隔（小时）", text: $backupIntervalHours)
-                        TextField("自动备份保留天数（0 表示不清理）", text: $backupRetentionDays)
+                        TextField("自动备份保留天数（0 = 不按天数清理，仍保留每库最近 50 份）", text: $backupRetentionDays)
                         Text("只清理自动备份；手工导出的备份不会被删除。")
                             .font(.caption).foregroundStyle(.secondary)
                     }

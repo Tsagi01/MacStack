@@ -263,25 +263,27 @@ import Testing
     #expect((try Data(contentsOf: log)).isEmpty)
 }
 
-@Test func backupCatalogRoundTripUsesRealFileMetadata() throws {
+@Test func backupCatalogRoundTripUsesRealFileMetadata() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = BackupCatalogStore(directory: directory)
-    let file = try store.destination(database: "course")
+    let file = try await store.destination(database: "course")
     try Data("SQL".utf8).write(to: file)
     let date = Date(timeIntervalSince1970: 1_700_000_000)
-    let records = try store.register(database: "course", file: file, automatic: true, createdAt: date)
+    let records = try await store.register(database: "course", file: file, automatic: true, createdAt: date)
     #expect(records.first?.database == "course")
     #expect(records.first?.byteCount == 3)
-    #expect(store.load().first?.createdAt == date)
-    #expect(store.lastAutomaticBackupDate(database: "course") == date)
+    let loaded = await store.load()
+    #expect(loaded.first?.createdAt == date)
+    let lastAutomatic = await store.lastAutomaticBackupDate(database: "course")
+    #expect(lastAutomatic == date)
 }
 
 /// 自动备份的间隔判断必须**按库**进行。
 ///
 /// 之前用的是「全局最新一次自动备份时间」，后果是新登记的业务库要等满一整个间隔
 /// （最长 168 小时）才会被首次备份。
-@Test func backupCatalogTracksLastAutomaticBackupPerDatabase() throws {
+@Test func backupCatalogTracksLastAutomaticBackupPerDatabase() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = BackupCatalogStore(directory: directory)
@@ -289,29 +291,33 @@ import Testing
     let early = Date(timeIntervalSince1970: 1_700_000_000)
     let late = early.addingTimeInterval(3_600)
 
-    let first = try store.destination(database: "alpha", date: early)
+    let first = try await store.destination(database: "alpha", date: early)
     try Data("a".utf8).write(to: first)
-    _ = try store.register(database: "alpha", file: first, automatic: true, createdAt: early)
+    _ = try await store.register(database: "alpha", file: first, automatic: true, createdAt: early)
 
-    let second = try store.destination(database: "beta", date: late)
+    let second = try await store.destination(database: "beta", date: late)
     try Data("b".utf8).write(to: second)
-    _ = try store.register(database: "beta", file: second, automatic: true, createdAt: late)
+    _ = try await store.register(database: "beta", file: second, automatic: true, createdAt: late)
 
     // 全局最新是 beta 的时间，但 alpha 仍应返回自己的时间。
-    #expect(store.lastAutomaticBackupDate(database: "alpha") == early)
-    #expect(store.lastAutomaticBackupDate(database: "beta") == late)
+    let alphaLatest = await store.lastAutomaticBackupDate(database: "alpha")
+    let betaLatest = await store.lastAutomaticBackupDate(database: "beta")
+    let gammaLatest = await store.lastAutomaticBackupDate(database: "gamma")
+    #expect(alphaLatest == early)
+    #expect(betaLatest == late)
     // 没备份过的库没有任何时间，会被立即备份。
-    #expect(store.lastAutomaticBackupDate(database: "gamma") == nil)
+    #expect(gammaLatest == nil)
 
     // 手工备份不参与自动备份的时间判断。
-    let manual = try store.destination(database: "alpha", date: late)
+    let manual = try await store.destination(database: "alpha", date: late)
     try Data("m".utf8).write(to: manual)
-    _ = try store.register(database: "alpha", file: manual, automatic: false, createdAt: late)
-    #expect(store.lastAutomaticBackupDate(database: "alpha") == early)
+    _ = try await store.register(database: "alpha", file: manual, automatic: false, createdAt: late)
+    let afterManual = await store.lastAutomaticBackupDate(database: "alpha")
+    #expect(afterManual == early)
 }
 
 /// 清理只针对超期的自动备份，且只删备份目录内的文件。
-@Test func backupPruningOnlyRemovesExpiredAutomaticBackupsInsideDirectory() throws {
+@Test func backupPruningOnlyRemovesExpiredAutomaticBackupsInsideDirectory() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = BackupCatalogStore(directory: directory)
@@ -320,26 +326,26 @@ import Testing
     let old = now.addingTimeInterval(-40 * 86_400)
     let recent = now.addingTimeInterval(-1 * 86_400)
 
-    let expiredAutomatic = try store.destination(database: "alpha", date: old)
+    let expiredAutomatic = try await store.destination(database: "alpha", date: old)
     try Data("old".utf8).write(to: expiredAutomatic)
-    _ = try store.register(database: "alpha", file: expiredAutomatic, automatic: true, createdAt: old)
+    _ = try await store.register(database: "alpha", file: expiredAutomatic, automatic: true, createdAt: old)
 
-    let freshAutomatic = try store.destination(database: "alpha", date: recent)
+    let freshAutomatic = try await store.destination(database: "alpha", date: recent)
     try Data("new".utf8).write(to: freshAutomatic)
-    _ = try store.register(database: "alpha", file: freshAutomatic, automatic: true, createdAt: recent)
+    _ = try await store.register(database: "alpha", file: freshAutomatic, automatic: true, createdAt: recent)
 
     // 手工备份即使超期也不该被删。
-    let expiredManual = try store.destination(database: "alpha", date: old)
+    let expiredManual = try await store.destination(database: "alpha", date: old)
     try Data("manual".utf8).write(to: expiredManual)
-    _ = try store.register(database: "alpha", file: expiredManual, automatic: false, createdAt: old)
+    _ = try await store.register(database: "alpha", file: expiredManual, automatic: false, createdAt: old)
 
     // catalog 被改成指向目录外的路径时也不能波及外部文件。
     let outside = FileManager.default.temporaryDirectory.appendingPathComponent("MacStackOutside-\(UUID()).sql")
     try Data("outside".utf8).write(to: outside)
     defer { try? FileManager.default.removeItem(at: outside) }
-    _ = try store.register(database: "alpha", file: outside, automatic: true, createdAt: old)
+    _ = try await store.register(database: "alpha", file: outside, automatic: true, createdAt: old)
 
-    let removed = store.pruneAutomaticBackups(olderThanDays: 30, now: now)
+    let removed = await store.pruneAutomaticBackups(olderThanDays: 30, now: now)
     #expect(removed == 1)
 
     #expect(!FileManager.default.fileExists(atPath: expiredAutomatic.path))
@@ -347,26 +353,23 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: expiredManual.path))
     #expect(FileManager.default.fileExists(atPath: outside.path))
 
-    let remaining = Set(store.load().map(\.filePath))
+    let remaining = Set(await store.load().map(\.filePath))
     #expect(!remaining.contains(expiredAutomatic.path))
     #expect(remaining.contains(freshAutomatic.path))
     #expect(remaining.contains(expiredManual.path))
-
-    // 保留天数为 0 表示不清理。
-    #expect(store.pruneAutomaticBackups(olderThanDays: 0, now: now) == 0)
 }
 
 /// 登记数量超过旧上限时，catalog 不能静默丢记录并把对应 SQL 变成孤儿文件。
-@Test func backupCatalogDoesNotDiscardRecordsAtLegacyTwoHundredLimit() throws {
+@Test func backupCatalogDoesNotDiscardRecordsAtLegacyTwoHundredLimit() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = BackupCatalogStore(directory: directory)
-    let backup = try store.destination(database: "alpha")
+    let backup = try await store.destination(database: "alpha")
     try Data("backup".utf8).write(to: backup)
 
     for offset in 0..<205 {
-        _ = try store.register(
+        _ = try await store.register(
             database: "alpha",
             file: backup,
             automatic: true,
@@ -374,7 +377,8 @@ import Testing
         )
     }
 
-    #expect(store.load().count == 205)
+    let records = await store.load()
+    #expect(records.count == 205)
 }
 
 /// 轮转可以按前缀限定范围。
@@ -1896,4 +1900,81 @@ private func makeHtaccessFixture(_ body: String) throws -> URL {
         localhost?["NSIncludesSubdomains"] as? Bool == true,
         "站点域名形如 xxx.localhost，必须包含子域"
     )
+}
+
+/// 份数上限必须独立于天数策略生效。
+///
+/// `backupRetentionDays = 0` 表示「不按天数清理」。去掉 `register` 里的 200 条截断后，
+/// 如果没有份数上限，自动备份会无限增长——这正是截断曾经（以产生孤儿文件为代价）
+/// 挡住的问题。现在由份数上限接管，而且**文件与记录一起删**，不产生孤儿。
+@Test func backupPruningEnforcesCountCapIndependentlyOfAge() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupCatalogStore(directory: directory)
+
+    let base = Date(timeIntervalSince1970: 1_700_000_000)
+    // 造 6 份自动备份，全部都很新（不会因超期被删）。
+    var files: [URL] = []
+    for index in 0..<6 {
+        let created = base.addingTimeInterval(Double(index) * 60)
+        let file = try await store.destination(database: "alpha", date: created)
+        try Data("payload".utf8).write(to: file)
+        files.append(file)
+        _ = try await store.register(database: "alpha", file: file, automatic: true, createdAt: created)
+    }
+    // 再来一份手动备份，它不该被份数上限波及。
+    let manual = try await store.destination(database: "alpha", date: base.addingTimeInterval(600))
+    try Data("manual".utf8).write(to: manual)
+    _ = try await store.register(database: "alpha", file: manual, automatic: false, createdAt: base.addingTimeInterval(600))
+
+    // 天数传 0（不按天数清理），只留最新 2 份自动备份。
+    let removed = await store.pruneAutomaticBackups(
+        olderThanDays: 0,
+        keepingAtMost: 2,
+        now: base.addingTimeInterval(3_600)
+    )
+    #expect(removed == 4)
+
+    let remaining = Set(await store.load().map(\.filePath))
+    // 保留的是最新的两份。
+    #expect(remaining.contains(files[5].path))
+    #expect(remaining.contains(files[4].path))
+    #expect(!remaining.contains(files[0].path))
+    // 手动备份不受份数上限影响。
+    #expect(remaining.contains(manual.path))
+    #expect(FileManager.default.fileExists(atPath: manual.path))
+    // 被删的记录对应的文件必须一起消失，不留孤儿。
+    #expect(!FileManager.default.fileExists(atPath: files[0].path))
+    #expect(!FileManager.default.fileExists(atPath: files[1].path))
+}
+
+/// 并发登记不能丢记录。
+///
+/// 之前 `BackupCatalogStore` 是无锁 struct，而 `register` 是「读-改-写整个 catalog.json」：
+/// 两个并发调用各自读到旧快照，后写的覆盖先写的，刚登记的备份就从列表里消失、
+/// 文件却留在磁盘上。改成 actor 后所有写入串行化，必须一条不丢。
+///
+/// 这条测试直接对着用户报告的那个竞态：自动备份调度器在后台写、界面在主线程写。
+@Test func backupCatalogSurvivesConcurrentRegistration() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("MacStackTests-\(UUID())", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BackupCatalogStore(directory: directory)
+
+    let expected = 24
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        for index in 0..<expected {
+            group.addTask {
+                let file = try await store.destination(database: "alpha")
+                try Data("payload-\(index)".utf8).write(to: file)
+                _ = try await store.register(database: "alpha", file: file, automatic: false)
+            }
+        }
+        try await group.waitForAll()
+    }
+
+    let records = await store.load()
+    #expect(records.count == expected, "并发登记后应保留全部 \(expected) 条，实际 \(records.count) 条")
+    // 记录指向的文件也必须都还在。
+    let missing = records.filter { !FileManager.default.fileExists(atPath: $0.filePath) }
+    #expect(missing.isEmpty, "有 \(missing.count) 条记录对应的文件不存在")
 }

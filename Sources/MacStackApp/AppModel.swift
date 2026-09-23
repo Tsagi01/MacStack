@@ -76,6 +76,12 @@ final class AppModel: ObservableObject {
     var serviceMonitorTask: Task<Void, Never>?
     var backupSchedulerTask: Task<Void, Never>?
     var restoreJob: DatabaseRestoreJob?
+    /// 正在进行的备份任务数。
+    ///
+    /// 之前用普通 `Bool`：`exportSelectedDatabase` 结束时无条件置 false，
+    /// 会把仍在运行的自动备份的标志一起清掉，于是「已有备份在进行」的判断失效。
+    /// 改成计数后，只有最后一个任务结束才把界面标志置回 false。
+    var activeBackupJobs = 0
     /// 网站状态刷新任务。新一轮刷新前会取消它，避免旧探测结果覆盖新结果。
     var websiteStatusRefreshTask: Task<Void, Never>?
     /// 网站探测的并发上限：站点多时避免串行等待，也避免一次打出几十个请求。
@@ -120,13 +126,14 @@ final class AppModel: ObservableObject {
             atPath: layout.phpMyAdminDirectory.appendingPathComponent("index.php").path
         )
         if phpMyAdminPrepared { phpMyAdminStatus = "已发现 MacStack 的 phpMyAdmin 副本。" }
-        backupRecords = backupCatalog.load()
         updateStoppedWebsiteStatuses()
     }
 
     func launch() async {
         guard !didLaunch else { return }
         didLaunch = true
+        // 备份清单在 actor 里，读取需要 await，因此不能放在同步的 init 里。
+        backupRecords = await backupCatalog.load()
         await inspect()
         await inspectDeveloperTools()
         await inspectDependencies()

@@ -23,6 +23,18 @@ extension AppModel {
         }
     }
 
+    /// 开始一个备份任务。用计数而不是布尔，见 `activeBackupJobs` 的说明。
+    func beginBackupJob() {
+        activeBackupJobs += 1
+        backingUpDatabase = true
+    }
+
+    /// 结束一个备份任务。只有最后一个任务结束才把界面标志置回 false。
+    func endBackupJob() {
+        activeBackupJobs = max(0, activeBackupJobs - 1)
+        backingUpDatabase = activeBackupJobs > 0
+    }
+
     func exportSelectedDatabase() async {
         guard databaseRunning, !selectedDatabase.isEmpty else {
             message = "请先启动数据库并选择要导出的数据库。"
@@ -34,7 +46,8 @@ extension AppModel {
         panel.nameFieldStringValue = "\(selectedDatabase)-\(date).sql"
         panel.allowedContentTypes = [UTType(filenameExtension: "sql")!]
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        backingUpDatabase = true
+        beginBackupJob()
+        defer { endBackupJob() }
         let database = selectedDatabase
         let layout = RuntimeLayout.applicationSupport()
         do {
@@ -43,7 +56,7 @@ extension AppModel {
                 try DatabaseBackupManager(installation: installation, layout: layout)
                     .exportDatabase(named: database, to: destination)
             }.value
-            backupRecords = try backupCatalog.register(database: database, file: destination, automatic: false)
+            backupRecords = try await backupCatalog.register(database: database, file: destination, automatic: false)
             databaseBackupStatus = "已导出 \(database)：\(destination.path)"
             record("数据库 \(database) 已完整导出为 SQL。")
             NSWorkspace.shared.activateFileViewerSelecting([destination])
@@ -51,7 +64,6 @@ extension AppModel {
             message = error.localizedDescription
             databaseBackupStatus = "导出失败：\(error.localizedDescription)"
         }
-        backingUpDatabase = false
     }
 
     func restoreDatabaseBackup() async {
@@ -144,31 +156,31 @@ extension AppModel {
         let layout = RuntimeLayout.applicationSupport()
         let catalog = backupCatalog
 
-        backingUpDatabase = true
-        defer { backingUpDatabase = false }
+        beginBackupJob()
+        defer { endBackupJob() }
         do {
             let result = try await Task.detached { () -> (records: [BackupRecord], backedUp: Int, skipped: Int, removed: Int) in
                 let installation = try DatabaseStackResolver().resolve()
                 let manager = DatabaseBackupManager(installation: installation, layout: layout)
                 let databases = try manager.listDatabases()
-                var latest = catalog.load()
+                var latest = await catalog.load()
                 var backedUp = 0
                 var skipped = 0
                 for database in databases {
                     // 按库判断间隔：新登记的业务库不该等满一整个周期才首次备份。
                     if !force,
-                       let last = catalog.lastAutomaticBackupDate(database: database),
+                       let last = await catalog.lastAutomaticBackupDate(database: database),
                        Date().timeIntervalSince(last) < interval {
                         skipped += 1
                         continue
                     }
-                    let destination = try catalog.destination(database: database)
+                    let destination = try await catalog.destination(database: database)
                     try manager.exportDatabase(named: database, to: destination)
-                    latest = try catalog.register(database: database, file: destination, automatic: true)
+                    latest = try await catalog.register(database: database, file: destination, automatic: true)
                     backedUp += 1
                 }
-                let removed = catalog.pruneAutomaticBackups(olderThanDays: retentionDays)
-                if removed > 0 { latest = catalog.load() }
+                let removed = await catalog.pruneAutomaticBackups(olderThanDays: retentionDays)
+                if removed > 0 { latest = await catalog.load() }
                 return (latest, backedUp, skipped, removed)
             }.value
             backupRecords = result.records

@@ -263,6 +263,27 @@ Homebrew 只提供组件，不同时通过 brew services 管理同一实例。
 
 **尚未完成（需要安装后的应用）**：ATS 例外是否真的放行，**只能由安装后的应用请求验证**。本轮发现一个与预期不同的现象：CLI 进程里 `.localhost` 并未被 ATS 拦截（最小 Swift 程序同样返回 200），因此 CLI 通过**不能**作为应用内放行的证据。
 
+### 备份目录：保留上限与并发安全
+
+**两个问题**，一个是我上一轮引入的，一个是既有的：
+
+1. **去掉 `register` 的 200 条截断后留下了无上限的口子。** 截断本身会产生孤儿文件（记录被挤出去、`.sql` 留在磁盘），但它至少挡住了无限增长。而 `backupRetentionDays = 0` 表示「不按天数清理」，于是自动备份可以无限增长。**这是把问题从「孤儿」换成了「无上限」。**
+2. **`BackupCatalogStore` 存在真实的丢失更新竞态。** 它是无锁的 `Sendable` struct，却被两处并发访问：每 60 秒的自动备份调度器在 `Task.detached` 里读写，界面同时可能在主线程读写。而 `register` 与 `pruneAutomaticBackups` 都是**读-改-写整个 `catalog.json`**。可复现的后果：自动备份跑到清理逻辑时用户点了「导出当前数据库」，等导出登记完之后，清理用一份**旧快照**覆盖回去 —— 刚导出的备份从列表消失、文件留在磁盘上，正是这个类型想避免的孤儿，从另一条路径回来。
+
+**改动**：
+
+- `BackupCatalogStore` 由 `struct` 改为 **`actor`**，所有读写自动串行化。
+- 新增**份数上限** `maximumAutomaticBackupsPerDatabase = 50`，独立于天数策略生效；`backupRetentionDays = 0` 时仍受约束。**文件与记录一起删**，不产生孤儿。手动备份不受上限影响。
+- `backingUpDatabase` 由布尔改为**计数**。之前 `exportSelectedDatabase` 结束时无条件置 false，会把仍在运行的自动备份的标志一起清掉，使「已有备份在进行」的判断失效。
+
+**验证**：
+
+- `swift test --disable-sandbox`：**80 项全部通过**（新增 2 项）。编译无警告。
+- **10 条验收命令全部通过**。
+- 新增 `backupPruningEnforcesCountCapIndependentlyOfAge`：天数传 0、份数上限设 2，6 份自动备份应删 4 份且保留最新两份；手动备份不受影响；被删记录的文件必须一起消失。
+- 新增 `backupCatalogSurvivesConcurrentRegistration`：24 个并发登记必须一条不丢、且记录指向的文件都存在。
+- **验证过这条测试真的能抓到 bug**：临时复刻旧的无锁 struct 实现，用同样的并发模式压它，确认它**确实丢记录**（否则这条测试就没有价值）。验证后已删除该临时探针。
+
 ## 本机验证记录（2026-09-14）
 
 ### 改进方案五个阶段实施后的完整回归
