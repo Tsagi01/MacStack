@@ -20,6 +20,23 @@ bash scripts/package-release.sh
 
 会在 `dist/releases` 生成 ARM64 DMG、ZIP 和 SHA-256 校验文件。没有开发者证书时得到的是本地测试包，不应称为已公证正式版。
 
+## 发行前必须先齐备的材料
+
+`scripts/package-release.sh` 会在打包**之前**检查三项合规材料：
+
+| 文件 | 缺了会怎样 |
+|---|---|
+| `LICENSE` | 项目没有许可证，默认是「保留所有权利」，等于未授权他人使用与再分发 |
+| `licenses/THIRD-PARTY.md` | 第三方组件清单未生成，署名与许可证正文没有随包 |
+| `docs/SOURCE_OFFER.md` | GPL-2.0 要求的源码提供说明未就位 |
+
+**本地测试打包只警告并继续；设置了 `MACSTACK_NOTARY_PROFILE`（即正式对外发行）时直接中止。**
+把合规做成构建流程的一部分，而不是靠人记得。
+
+另外，发行包的文件名取自 `Resources/Info.plist` 的 `CFBundleShortVersionString`。
+打标签前先同步它，并更新 `CHANGELOG.md`——`.github/workflows/release.yml` 会检查
+标签与 plist 版本是否一致，不一致直接失败。
+
 ## Developer ID 与公证
 
 先在 Apple Developer 账户创建 Developer ID Application 证书，并用 `notarytool store-credentials` 保存钥匙串配置。随后：

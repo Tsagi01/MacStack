@@ -43,6 +43,20 @@ jobs:
       - name: 构建便携运行时
         run: bash scripts/build-portable-runtime.sh
 
+      # 发行包的文件名取自 Info.plist 的版本号（package-release.sh 读它）。
+      # 标签是 v0.11.0 而 plist 还写着 0.10.1 时，Release 里会出现
+      # `MacStack-0.10.1-arm64.dmg` —— 名字和标签对不上，用户会以为下到了旧包。
+      # 与其事后解释，不如在打包之前就拦住。
+      - name: 检查标签与 Info.plist 版本一致
+        run: |
+          plist_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$plist_version" != "$tag_version" ]; then
+            echo "::error::标签是 $GITHUB_REF_NAME，而 Info.plist 里的版本是 $plist_version。请先同步版本号（并更新 CHANGELOG）再打标签。"
+            exit 1
+          fi
+          echo "版本一致：$plist_version"
+
       # 未配置签名密钥时，这一步仍会产出未签名的 DMG/ZIP，并在发行前检查里
       # 给出警告（不中止）。
       - name: 打包
