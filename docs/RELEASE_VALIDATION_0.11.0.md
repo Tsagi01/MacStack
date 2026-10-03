@@ -22,4 +22,4 @@
 
 ## GitHub
 
-本轮将源码、版本说明和验收记录同步到 `main`，再记录 CI 的实际运行结果。工作流使用原生 ARM64 `macos-15` 与完整 Xcode 16.4；应用最低运行系统仍为 macOS 14。
+源码、版本说明和验收记录已同步到 `main`。提交 `0529caa` 的 [CI 运行](https://github.com/Tsagi01/MacStack/actions/runs/37139865723) 已成功，包含构建与单元测试。工作流使用原生 ARM64 `macos-15` 与完整 Xcode 16.4；应用最低运行系统仍为 macOS 14。运行环境依据 [GitHub runner 文档](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) 与 [macOS 15 ARM64 镜像清单](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md) 选择。
