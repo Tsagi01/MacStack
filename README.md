@@ -1,6 +1,6 @@
 # MacStack
 
-面向 Apple Silicon 的原生 macOS 本地 Web 工作台。当前为 **0.10.1 开发预览**：Apache、PHP-FPM、MariaDB、phpMyAdmin 及动态库已经可以随应用打包，最终用户运行核心 Web 环境不再需要 Homebrew。多站点、`.localhost` 域名、开发 HTTPS、Perl/CGI、PHP 扩展管理、项目向导、备份恢复和旧 XAMPP 逻辑迁移也已接入。正式自动更新、Developer ID 公证和可选 FTP 服务仍未完成，因此还不应称为所有场景下的完整 XAMPP 替代品。
+面向 Apple Silicon 的原生 macOS 本地 Web 工作台。当前源码为 **0.11.0 开发预览**：Apache、PHP-FPM、MariaDB、phpMyAdmin 及动态库已经可以随应用打包，最终用户运行核心 Web 环境不再需要 Homebrew。多站点、`.localhost` 域名、开发 HTTPS、Perl/CGI、PHP 扩展管理、项目向导、备份恢复和旧 XAMPP 逻辑迁移也已接入。正式自动更新、Developer ID 公证和可选 FTP 服务仍未完成，因此还不应称为所有场景下的完整 XAMPP 替代品。
 
 [![GitHub Release](https://img.shields.io/github/v/release/Tsagi01/MacStack?include_prereleases&label=release)](https://github.com/Tsagi01/MacStack/releases)
 ![Platform](https://img.shields.io/badge/macOS-14%2B-black)
@@ -10,10 +10,12 @@
 
 MacStack 面向 **Apple Silicon（M1/M2/M3/M4 及后续芯片）和 macOS 14+**，不支持 Intel Mac。
 
+公开下载目前仍为 0.10.1；0.11.0 已进入本地安装验收，尚未公开发行安装包。版本变化见 [CHANGELOG](CHANGELOG.md)。
+
 1. 前往 [MacStack 0.10.1 下载页](https://github.com/Tsagi01/MacStack/releases/tag/v0.10.1) 下载 `MacStack-0.10.1-arm64.dmg`（推荐）或 ZIP。
 2. 打开 DMG，把 `MacStack.app` 拖到“应用程序”文件夹；ZIP 用户解压后移动应用即可。
 3. 第一次启动时，macOS 可能因为当前开发预览包尚未 Apple 公证而阻止打开。请在 Finder 中按住 Control 点击 MacStack，选择“打开”，再次确认。
-4. 点击 **Start All**，然后打开 `http://localhost:8080`。默认网站目录是 `~/Library/Application Support/MacStack/runtime/www`，也可以在“网站”页面点击 **Open Application Folder**。
+4. 点击 **Start All**，然后打开 `http://localhost:8080`。默认网站目录是 `~/Library/Application Support/MacStack/runtime/www`，0.11.0 中可在“网站”页面点击 **打开默认网站目录**。
 
 DMG 和 ZIP 已包含 Apache、PHP-FPM、MariaDB、phpMyAdmin 及所需 ARM64 动态库。**使用安装包的普通用户不需要 Homebrew，也不需要 Rosetta。** 下载页同时提供 SHA-256 文件用于完整性核验。
 
@@ -40,12 +42,12 @@ DMG 和 ZIP 已包含 Apache、PHP-FPM、MariaDB、phpMyAdmin 及所需 ARM64 �
 
 - SwiftUI 原生双栏界面：总览、网站、数据库、PHP 扩展、迁移、日志、环境、设置。
 - Start All / Stop All、上次运行状态恢复，以及可选的 Web/数据库随应用启动。
-- 强制退出后的残留 PID 会先核对命令行与 MacStack 专属配置路径，再清理确认属于 MacStack 的进程；不按名称批量杀进程。
+- 强制退出后的残留 PID 会先核对内核返回的可执行文件路径、命令行与 MacStack 专属配置路径，再清理确认属于 MacStack 的进程；不按名称批量杀进程。
 - PHP 项目向导可生成 `public/index.php`、样式、README、`.gitignore` 和不含真实密码的 PDO 模板，并可同时创建 MariaDB 数据库、登记网站与分配端口。
 - 优先识别应用内版本化 ARM64 便携运行时；源码开发版缺少内置包时才回退查找 `/opt/homebrew/opt`。
 - 读取 Mach-O 头部，识别主程序是否包含 ARM64；不执行候选文件。
 - 网站目录登记、公开目录选择、稳定独立端口、启用/停用、浏览器访问、Finder 与错误日志入口；登记不复制网站，移出不删除文件。
-- “Open Application Folder” 按钮可直接打开 `localhost:8080` 对应的默认网站目录。
+- “打开默认网站目录”按钮可直接打开 `localhost:8080` 对应的默认网站目录。
 - 每个已启用网站生成独立的本机 Apache 监听与日志，支持 PHP-FPM、静态 HTML/CSS，并默认拒绝目录列表、符号链接跟随及 `.env`、`.git` 等隐藏路径。
 - HTTP/数据库/网站端口校验、真实占用检测、原子保存和配置版本迁移；旧 schema 首次保存前保留备份。
 - 可选择已安装的 PHP 8.2–8.5；指定版本缺失时明确报错，不静默换成其他版本。

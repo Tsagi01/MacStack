@@ -12,8 +12,10 @@ concurrency:
 
 jobs:
   build-and-test:
-    # 项目要求 macOS 14+，这里用 macos-14 runner。
-    runs-on: macos-14
+    # 原生 ARM64 runner 使用 /opt/homebrew；最低运行系统仍为 macOS 14。
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +38,7 @@ jobs:
             echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
             echo "已把 DEVELOPER_DIR 设为 $DEVELOPER_DIR"
           fi
-          if xcode-select -p | grep -q CommandLineTools; then
+          if xcrun --find swift | grep -q CommandLineTools; then
             echo "::error::当前选中的是 Command Line Tools。本项目需要完整 Xcode（#Preview 宏插件）。"
             exit 1
           fi

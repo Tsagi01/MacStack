@@ -3,7 +3,7 @@
 ## 环境要求
 
 - macOS 14 或更新版本（Apple Silicon）
-- **完整 Xcode 15 或更新版本**（`#Preview` 等 SwiftUI 宏需要）
+- **完整 Xcode 16 或更新版本**（Swift 6 与 `#Preview` 等 SwiftUI 宏需要）
 - [Homebrew](https://brew.sh/)（**仅开发和构建时需要**；最终应用不依赖它）
 
 ### 必须是完整 Xcode，不能只有 Command Line Tools

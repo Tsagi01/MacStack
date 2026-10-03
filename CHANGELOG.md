@@ -4,6 +4,8 @@
 
 ## [未发布]
 
+## [0.11.0] - 2026-10-04
+
 ### 新增
 
 - **网站状态不再把所有错误混为「无法访问」。** 现在区分：页面正常、发生跳转（并显示跳转目标）、
@@ -42,6 +44,11 @@
 - 修复恢复中断后没有明确提示，用户不知道数据库处于半恢复状态。
 - 修复日志轮转可能破坏仍在运行的另一项服务的日志。
 - 修复发行包 ZIP 在公证装订之前生成，导致离线安装校验失败。
+- 修复旧的网站探测结果覆盖新状态，或在服务停止后回写「页面正常」。
+- 修复坏 SQL 和取消恢复时的断管道崩溃；保留数据库客户端的实际报错。
+- 修复残留服务恢复误认只打开配置文件的编辑器和日志进程。
+- 修复数据库名称作为命令行选项或备份路径处理的问题。
+- 修复 CRLF 格式 `.htaccess` 的预检遗漏，并收紧私钥、导出文件和临时连接文件权限。
 
 ### 说明
 
@@ -68,6 +75,7 @@
 - 数据库备份与恢复、phpMyAdmin 集成、本地 HTTPS、Perl/CGI 支持。
 - 第三方组件的许可证与声明文件随包分发（`licenses/`）。
 
-[未发布]: https://github.com/Tsagi01/MacStack/compare/v0.10.1...HEAD
+[未发布]: https://github.com/Tsagi01/MacStack/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/Tsagi01/MacStack/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Tsagi01/MacStack/releases/tag/v0.10.1
 [0.10.0]: https://github.com/Tsagi01/MacStack/releases/tag/v0.10.0

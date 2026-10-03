@@ -13,8 +13,8 @@ body:
     id: version
     attributes:
       label: MacStack 版本
-      description: 在「设置 → 版本与更新」里可以看到，例如 `0.10.1 (build 15)`。
-      placeholder: "0.10.1 (build 15)"
+      description: 在「设置 → 版本与更新」里可以看到，例如 `0.11.0 (build 16)`。
+      placeholder: "0.11.0 (build 16)"
     validations:
       required: true
 
